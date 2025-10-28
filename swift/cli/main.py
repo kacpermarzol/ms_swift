@@ -49,11 +49,18 @@ def get_torchrun_args() -> Optional[List[str]]:
 
 
 def prepare_config_args(argv):
-    for i in range(len(argv)):
+    from omegaconf import OmegaConf, DictConfig, ListConfig
+    import json
+    from typing import Any, Dict
+
+    i = 0
+    while i < len(argv):
         arg_name = argv[i]
-        arg_value = argv[i + 1]
         if arg_name == '--config':
-            from omegaconf import OmegaConf, DictConfig
+            if i + 1 >= len(argv):
+                raise ValueError("--config flag provided without a path to the config file")
+
+            arg_value = argv[i + 1]
             config = OmegaConf.load(arg_value)
 
             def parse_dict_config(cfg: DictConfig) -> Dict[str, Any]:
@@ -72,15 +79,16 @@ def prepare_config_args(argv):
             for key, value in cfg.items():
                 argv.append(f'--{key}')
                 if isinstance(value, list):
-                    argv.extend(value)
+                    argv.extend(map(str, value))
                 else:
                     argv.append(str(value))
 
-            # Pop --config
-            argv.pop(i)
-            # Pop value of --config
-            argv.pop(i)
+            # Remove the --config and its value
+            del argv[i:i+2]
             break
+
+        i += 1
+
 
 
 def _compat_web_ui(argv):
