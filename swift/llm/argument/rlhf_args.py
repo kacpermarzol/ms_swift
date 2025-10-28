@@ -88,6 +88,11 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
         desirable_weight (float): Weight for desirable outcomes in KTO. Default is 1.0.
         undesirable_weight (float): Weight for undesirable outcomes in KTO. Default is 1.0.
     """
+    reward_model_kwargs: Optional[str] = field(
+        default=None,
+        metadata={"help": "JSON string of kwargs for the reward model."}
+    )
+
     rlhf_type: Literal['dpo', 'orpo', 'simpo', 'kto', 'cpo', 'rm', 'ppo', 'grpo', 'gkd'] = 'dpo'
     ref_model: Optional[str] = None
     ref_adapters: List[str] = field(default_factory=list)
