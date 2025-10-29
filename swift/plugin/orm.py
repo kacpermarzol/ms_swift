@@ -5,9 +5,12 @@ from typing import TYPE_CHECKING, Dict, List, Union
 import torch
 import PIL.Image
 import torch.nn.functional as F
-from diffusers import StableDiffusionPipeline
 from torchvision import transforms
 from typing import Optional, List, Dict, Union, Any
+
+from transformers import CLIPTextModel, CLIPTokenizer
+from diffusers import AutoencoderKL, UNet2DConditionModel, LMSDiscreteScheduler
+from tasks.utils.text_encoder import CustomTextEncoder
 
 import json
 
@@ -419,6 +422,8 @@ def preprocess_target_image(image, device, resolution = 512):
     tensor = preprocessor(image_rgb).unsqueeze(0)
     return tensor.to(device, dtype=torch.float16)
 
+
+
 class DenoisingReward(ORM):
     def __init__(self, base_model_name: str, unlearned_unet_path: str, device: str = "cuda"):
         self.device = torch.device(device)
@@ -427,32 +432,46 @@ class DenoisingReward(ORM):
         print(f"[DenoisingReward] Initializing with base model: {base_model_name}")
         print(f"[DenoisingReward] Loading unlearned UNet from: {unlearned_unet_path}")
         try:
-            self.pipeline = StableDiffusionPipeline.from_pretrained(
-                base_model_name,
-                torch_dtype=torch.float16,
-                safety_checker=None
+            dtype = torch.float16
+
+            self.vae = AutoencoderKL.from_pretrained(base_model_name, subfolder="vae").to(dtype=dtype, device=self.device)
+
+            self.tokenizer = CLIPTokenizer.from_pretrained(base_model_name, subfolder="tokenizer")
+            self.text_encoder = CLIPTextModel.from_pretrained(base_model_name, subfolder="text_encoder").to(dtype=dtype, device=self.device)
+            self.custom_text_encoder = CustomTextEncoder(self.text_encoder).to(self.device)
+            self.all_embeddings = self.custom_text_encoder.get_all_embedding().unsqueeze(0)
+
+            unet_config = UNet2DConditionModel.load_config(base_model_name, subfolder="unet")
+            with torch.no_grad():
+                self.unet = UNet2DConditionModel.from_config(unet_config).to(dtype=dtype)
+
+            self.scheduler = LMSDiscreteScheduler(
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                num_train_timesteps=1000
             )
 
-            unet_config = self.pipeline.unet.config
-            self.unet = UNet2DConditionModel(**unet_config).to(torch.float16)
             state_dict = torch.load(unlearned_unet_path, map_location='cpu')
 
             if 'state_dict' in state_dict:
                 state_dict = state_dict['state_dict']
             elif 'model' in state_dict:
-                 state_dict = state_dict['model']
+                state_dict = state_dict['model']
 
             state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
+
             self.unet.load_state_dict(state_dict)
             self.unet = self.unet.to(self.device)
+
+            self.vae.eval()
+            self.text_encoder.eval()
+            self.unet.eval()
+            self.vae.requires_grad_(False)
+            self.text_encoder.requires_grad_(False)
+            self.unet.requires_grad_(False)
+
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
-
-            self.tokenizer = self.pipeline.tokenizer
-            self.text_encoder = self.pipeline.text_encoder.to(self.device)
-            self.scheduler = self.pipeline.scheduler
-            self.vae = self.pipeline.vae.to(self.device)
-            print(f"[DenoisingReward] Victim model setup complete on {self.device}.")
-
         except Exception as e:
             print(f"[DenoisingReward] Error during initialization: {e}")
             raise
@@ -464,9 +483,8 @@ class DenoisingReward(ORM):
                 image_pil = PIL.Image.open(image_path)
                 target_tensor = preprocess_target_image(image_pil, self.device)
                 with torch.no_grad():
-                    clean_latents = self.vae.encode(
-                        target_tensor
-                    ).latent_dist.sample() * self.vae.config.scaling_factor
+                    clean_latents = self.vae.encode(target_tensor).latent_dist.mean
+                    clean_latents *= 0.18215  # Apply scaling factor used in ClassifierTask.img2latent
                 self.image_cache[image_path] = clean_latents
             except Exception as e:
                 print(f"[DenoisingReward] ERROR loading/processing image {image_path}: {e}")
@@ -475,21 +493,18 @@ class DenoisingReward(ORM):
     @torch.no_grad()
     def _get_reward_score(self,clean_latents, ap):
         try:
-            text_inputs = self.tokenizer(
-                ap,
-                padding="max_length",
-                max_length=self.tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt"
-            )
-            text_embeddings = self.text_encoder(text_inputs.input_ids.to(self.device))[0]
-            timestep = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()
-            real_noise = torch.randn_like(clean_latents, device=self.device)
-            noisy_latents = self.scheduler.add_noise(clean_latents, real_noise, timestep)
-            predicted_noise = self.unet(noisy_latents, timestep, encoder_hidden_states=text_embeddings).sample
-            loss = F.mse_loss(predicted_noise, real_noise, reduction="mean")
-            return -loss.item()
+            text_inputs = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt")
+            encoder_hidden_states = self.text_encoder(input_ids=text_inputs.input_ids.to(self.device))[0]
+            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long().item()  #
+            noise = torch.randn_like(clean_latents, device=self.device)
+            alpha_t_cumprod = self.alphas_cumprod[t]
+            noisy_latents = clean_latents * (alpha_t_cumprod ** 0.5) + noise * ((1 - alpha_t_cumprod) ** 0.5)
 
+            timestep_tensor = torch.tensor([t], device=self.device).long()
+
+            predicted_noise = self.unet(noisy_latents, timestep_tensor, encoder_hidden_states=encoder_hidden_states).sample
+            loss = F.mse_loss(predicted_noise, noise, reduction="mean")
+            return -loss.item()
         except Exception as e:
             print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
             return -torch.float('inf')
