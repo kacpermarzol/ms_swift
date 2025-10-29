@@ -567,16 +567,16 @@ class DenoisingReward(ORM):
 
                     latents = torch.randn((1, self.unet.in_channels, 64, 64), device=self.device, dtype=torch.float16)
 
-                    self.scheduler.set_timesteps(500)
-                    for t in self.scheduler.timesteps:
-                        t_tensor = torch.tensor([t], device=self.device).long()
-                        latent_model_input = self.scheduler.scale_model_input(latents, t_tensor)
-                        noise_pred_uncond = self.unet(latent_model_input, t_tensor, encoder_hidden_states=uncond_embeddings).sample
-                        noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
-                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                        latents = self.scheduler.step(noise_pred, t, latents).prev_sample
-
-                    latents = latents / 0.18215
+                    # self.scheduler.set_timesteps(50)
+                    # for t in self.scheduler.timesteps:
+                    #     t_tensor = torch.tensor([t], device=self.device).long()
+                    #     latent_model_input = self.scheduler.scale_model_input(latents, t_tensor)
+                    #     noise_pred_uncond = self.unet(latent_model_input, t_tensor, encoder_hidden_states=uncond_embeddings).sample
+                    #     noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+                    #     noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                    #     latents = self.scheduler.step(noise_pred, t, latents).prev_sample
+                    #
+                    # latents = latents / 0.18215
                     image = self.vae.decode(latents).sample
                     image = (image / 2 + 0.5).clamp(0, 1)
                     image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
