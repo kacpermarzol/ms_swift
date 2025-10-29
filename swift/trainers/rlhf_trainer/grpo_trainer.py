@@ -349,7 +349,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     if images is not None and isinstance(images, list):
                         report_to_wandb = self.args.report_to and 'wandb' in self.args.report_to and wandb.run is not None
                         if report_to_wandb:
-                            wandb.log({"generated_images": [wandb.Image(img) for img in images]}, step=self._step)
+                            wandb.log({"generated_images": [wandb.Image(img) for img in images]})
 
                 output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
                 rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
