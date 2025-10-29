@@ -576,6 +576,9 @@ class DenoisingReward(ORM):
                     uncond_embeddings = self.id2embedding(uncond_input.input_ids.to(self.device))
                     uncond_embeddings = self.custom_text_encoder(input_ids=uncond_input.input_ids.to(self.device),inputs_embeds=uncond_embeddings)[0]
 
+                    uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
+                    text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
+
                     generator = torch.manual_seed(123)
                     latents = torch.randn(
                         (1, self.unet.config.in_channels, height // 8, width // 8),
