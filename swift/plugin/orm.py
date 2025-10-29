@@ -525,7 +525,6 @@ class DenoisingReward(ORM):
         adversarial_prompts = []
         images = None
         step = kwargs.get('step', -1)
-
         for i in range(batch_size):
             generated_text = completions[i]
             img_path = image_paths[i]
@@ -546,7 +545,6 @@ class DenoisingReward(ORM):
             rewards.append(reward)
 
         if step % 2 == 0 and adversarial_prompts:
-
             guidance_scale = 7.5
             num_inference_steps = 100
             height = width = 512
@@ -562,7 +560,6 @@ class DenoisingReward(ORM):
             with torch.no_grad():
                 for prompt in adversarial_prompts:
                     sample_dict = {"prompt": prompt}
-
                     text_input = self.tokenizer(
                         prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt",
                         truncation=True
@@ -614,7 +611,6 @@ class DenoisingReward(ORM):
                     image_pil = PIL.Image.fromarray(image_np)
                     sample_dict["generated"] = image_pil
                     images.append(sample_dict)
-
         return rewards, images
 
 orms = {

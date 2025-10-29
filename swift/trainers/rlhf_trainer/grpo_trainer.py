@@ -346,11 +346,11 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         output_reward_func = reward_func(completions, **reward_kwargs)
 
                     if images:
-                        for i, img_dict in enumerate(images):
+                        for img_idx, img_dict in enumerate(images):
                             if "target" in img_dict:
                                 wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
                             else:
-                                wandb.log({f"generated_image_{i}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
+                                wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
 
                 output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
                 rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
