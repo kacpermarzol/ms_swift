@@ -291,6 +291,9 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     # repetition penalty, https://arxiv.org/abs/2502.03373
     repetition_n_grams: int = 3
     repetition_max_penalty: float = -1.0
+    #denoising reward
+    base_model_name: str = None
+    unlearned_unet_path: str = None
 
     reward_model: Optional[List[str]] = None
     reward_model_plugin: Optional[List[str]] = None
@@ -315,6 +318,8 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
 
     # Dr. GRPO, https://arxiv.org/abs/2503.20783
     scale_rewards: Optional[Literal['group', 'batch', 'none']] = None
+
+
 
     # entropy
     log_entropy: bool = False
