@@ -613,7 +613,6 @@ class DenoisingReward(ORM):
                     image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
                     image_pil = PIL.Image.fromarray(image_np)
                     sample_dict["generated"] = image_pil
-
                     images.append(sample_dict)
 
         return rewards, images
