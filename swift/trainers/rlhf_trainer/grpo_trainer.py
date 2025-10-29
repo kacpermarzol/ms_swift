@@ -338,12 +338,19 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     # Repeat all input columns (but "messages" and "completion") to match the number of generations
                     reward_kwargs.update(RowPreprocessor.rows_to_batched(inputs))
                     reward_kwargs.update({'step': self._step})
-                    output_reward_func, images = reward_func(completions, **reward_kwargs)
 
-                    if images is not None:
+                    images = None
+
+                    if reward_func_name == "DenoisingReward":
+                        output_reward_func, images = reward_func(completions, **reward_kwargs)
+                    else:
+                        output_reward_func = reward_func(completions, **reward_kwargs)
+
+                    if images is not None and isinstance(images, list):
                         report_to_wandb = self.args.report_to and 'wandb' in self.args.report_to and wandb.run is not None
                         if report_to_wandb:
                             wandb.log({"generated_images": [wandb.Image(img) for img in images]}, step=self._step)
+
                 output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
                 rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
 

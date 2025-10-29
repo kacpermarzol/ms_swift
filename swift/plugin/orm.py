@@ -519,7 +519,7 @@ class DenoisingReward(ORM):
         rewards = []
         adversarial_prompts = []
         images = None
-        step = kwargs.get('step', 0)
+        step = kwargs.get('step', -1)
 
         for i in range(batch_size):
             generated_text = completions[i]
