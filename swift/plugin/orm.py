@@ -513,7 +513,7 @@ class DenoisingReward(ORM):
             return -10000
 
     def id2embedding(self,input_ids):
-        input_one_hot = F.one_hot(input_ids.view(-1), num_classes = len(self.tokenizer.get_vocab())).float()
+        input_one_hot = F.one_hot(input_ids.view(-1), num_classes=len(self.tokenizer.get_vocab())).to(dtype=self.all_embeddings.dtype)
         input_one_hot = torch.unsqueeze(input_one_hot,0).to(self.device)
         input_embeds = input_one_hot @ self.all_embeddings
         return input_embeds
