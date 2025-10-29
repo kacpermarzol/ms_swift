@@ -555,7 +555,7 @@ class DenoisingReward(ORM):
             target_img_path = image_paths[0]
             target_image = PIL.Image.open(target_img_path).convert("RGB")
             target_image = target_image.resize((width, height))
-            images.append({"target_image": target_image})
+            images.append({"target": target_image})
 
             print(f"[DenoisingReward] Step {step}: Generating {len(adversarial_prompts)} images for visualization...")
 
