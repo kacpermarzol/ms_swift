@@ -512,6 +512,12 @@ class DenoisingReward(ORM):
             print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
             return -10000
 
+    def id2embedding(self,input_ids):
+        input_one_hot = F.one_hot(input_ids.view(-1), num_classes = len(self.tokenizer.get_vocab())).float()
+        input_one_hot = torch.unsqueeze(input_one_hot,0).to(self.device)
+        input_embeds = input_one_hot @ self.all_embeddings
+        return input_embeds
+
     def __call__(self, completions, **kwargs):
         image_paths = kwargs.get('target_img')
         batch_size = len(completions)
@@ -543,50 +549,60 @@ class DenoisingReward(ORM):
             guidance_scale = 7.5
             num_inference_steps = 100
             height = width = 512
-            latent_channels = 4
+            images = []
 
             print(f"[DenoisingReward] Step {step}: Generating {len(adversarial_prompts)} images for visualization...")
 
             with torch.no_grad():
-                batch_size = len(adversarial_prompts)
-                text_inputs = self.tokenizer(
-                        adversarial_prompts,
-                        padding="max_length",
-                        max_length=self.tokenizer.model_max_length,
-                        truncation=True,
+                for prompt in adversarial_prompts:
+                    text_input = self.tokenizer(
+                        prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt",
+                        truncation=True
+                    )
+                    text_embeddings = self.id2embedding(text_input.input_ids.to(self.device))
+
+                    input_ids = self.tokenizer(
+                        prompt, padding="max_length", max_length=self.tokenizer.model_max_length,
+                        return_tensors="pt", truncation=True
+                    ).input_ids.to(self.device)
+
+                    text_embeddings = self.custom_text_encoder(input_ids=input_ids, inputs_embeds=text_embeddings)[0]
+
+                    uncond_input = self.tokenizer(
+                        [""], padding="max_length", max_length=self.tokenizer.model_max_length,
                         return_tensors="pt"
-                ).to(self.device)
+                    ).to(self.device)
 
-                text_embeddings = self.text_encoder(input_ids=text_inputs.input_ids)[0].to(torch.float16)
-                uncond_input = self.tokenizer(
-                    [""] * batch_size,
-                    padding="max_length",
-                    max_length=self.tokenizer.model_max_length,
-                    truncation=True,
-                    return_tensors="pt"
-                ).to(self.device)
+                    uncond_embeddings = self.id2embedding(uncond_input.input_ids.to(self.device))
+                    uncond_embeddings = self.custom_text_encoder(input_ids=uncond_input.input_ids.to(self.device),inputs_embeds=uncond_embeddings)[0]
 
-                uncond_embeddings = self.text_encoder(input_ids=uncond_input.input_ids)[0].to(torch.float16)
+                    generator = torch.manual_seed(123)
+                    latents = torch.randn(
+                        (1, self.unet.config.in_channels, height // 8, width // 8),
+                        generator=generator,
+                    )
 
-                latents = torch.randn((batch_size, latent_channels, height // 8, width // 8), device=self.device, dtype=torch.float16)
+                    latents = latents.to(self.device)
+                    latents = latents * self.scheduler.init_noise_sigma
+                    self.scheduler.set_timesteps(num_inference_steps)
 
-                self.scheduler.set_timesteps(num_inference_steps)
+                    for t in self.scheduler.timesteps:
+                        latent_model_input = latents
+                        latent_model_input = self.scheduler.scale_model_input(latent_model_input, timestep=t)
 
-                for t in self.scheduler.timesteps:
-                    t_tensor = torch.tensor([t] * batch_size, device=self.device).long()
-                    latent_model_input = self.scheduler.scale_model_input(latents, t)
-                    noise_pred_uncond = self.unet(latent_model_input, t_tensor, encoder_hidden_states=uncond_embeddings).sample
-                    noise_pred_text = self.unet(latent_model_input, t_tensor, encoder_hidden_states=text_embeddings).sample
-                    noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                    latents = self.scheduler.step(noise_pred, t, latents).prev_sample
+                        noise_pred_uncond = self.unet(latent_model_input, t, encoder_hidden_states=uncond_embeddings).sample
+                        noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
 
-                latents = latents / 0.18215  # SD scaling factor
-                decoded_images = self.vae.decode(latents).sample
-                decoded_images = (decoded_images / 2 + 0.5).clamp(0, 1)
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+                        latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
-                images = []
-                for i in range(decoded_images.shape[0]):
-                    image_np = (decoded_images[i].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
+                    latents = 1 / 0.18215 * latents
+
+                    with torch.no_grad():
+                        image = self.vae.decode(latents).sample
+
+                    image = (image / 2 + 0.5).clamp(0, 1)
+                    image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
                     image_pil = PIL.Image.fromarray(image_np)
                     images.append(image_pil)
 
