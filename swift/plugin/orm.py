@@ -569,8 +569,9 @@ class DenoisingReward(ORM):
 
                     self.scheduler.set_timesteps(50)
                     for t in self.scheduler.timesteps:
-                        latent_model_input = self.scheduler.scale_model_input(latents, t)
-                        noise_pred_uncond = self.unet(latent_model_input, t, encoder_hidden_states=uncond_embeddings).sample
+                        t_tensor = torch.tensor([t], device=self.device).long()
+                        latent_model_input = self.scheduler.scale_model_input(latents, t_tensor)
+                        noise_pred_uncond = self.unet(latent_model_input, t_tensor, encoder_hidden_states=uncond_embeddings).sample
                         noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
                         latents = self.scheduler.step(noise_pred, t, latents).prev_sample
