@@ -546,21 +546,35 @@ class DenoisingReward(ORM):
             rewards.append(reward)
 
         if step % 2 == 0 and adversarial_prompts:
+
             guidance_scale = 7.5
             num_inference_steps = 100
             height = width = 512
             images = []
 
+            target_img_path = image_paths[0]
+            target_image = PIL.Image.open(target_img_path).convert("RGB")
+            target_image = target_image.resize((width, height))
+            images.append({"target_image": target_image})
+
             print(f"[DenoisingReward] Step {step}: Generating {len(adversarial_prompts)} images for visualization...")
 
             with torch.no_grad():
                 for prompt in adversarial_prompts:
+                    sample_dict = {}
+
+                    target_img_path = image_paths[i]
+                    target_image = PIL.Image.open(target_img_path).convert("RGB")
+                    target_image = target_image.resize((width, height))
+                    sample_dict["target"] = target_image
+
+
                     text_input = self.tokenizer(
                         prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt",
                         truncation=True
                     )
-                    text_embeddings = self.id2embedding(text_input.input_ids.to(self.device))
 
+                    text_embeddings = self.id2embedding(text_input.input_ids.to(self.device))
                     input_ids = self.tokenizer(
                         prompt, padding="max_length", max_length=self.tokenizer.model_max_length,
                         return_tensors="pt", truncation=True
@@ -604,7 +618,9 @@ class DenoisingReward(ORM):
                     image = (image / 2 + 0.5).clamp(0, 1)
                     image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
                     image_pil = PIL.Image.fromarray(image_np)
-                    images.append(image_pil)
+
+                    sample_dict["generated"] = image_pil
+                    images.append(sample_dict)
 
         return rewards, images
 
