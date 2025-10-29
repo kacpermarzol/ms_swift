@@ -418,7 +418,7 @@ def preprocess_target_image(image, device, resolution = 512):
         # transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILNEAR),
         # transforms.CenterCrop(resolution),
         transforms.ToTensor(),
-        # transforms.Normalize([0.5], [0.5]),
+        transforms.Normalize([0.5], [0.5]),
     ])
     image_rgb = image.convert("RGB")
     tensor = preprocessor(image_rgb).unsqueeze(0)
@@ -437,7 +437,6 @@ class DenoisingReward(ORM):
             dtype = torch.float16
 
             self.vae = AutoencoderKL.from_pretrained(base_model_name, subfolder="vae").to(dtype=dtype, device=self.device)
-
             self.tokenizer = CLIPTokenizer.from_pretrained(base_model_name, subfolder="tokenizer")
             self.text_encoder = CLIPTextModel.from_pretrained(base_model_name, subfolder="text_encoder").to(dtype=dtype, device=self.device)
             self.custom_text_encoder = CustomTextEncoder(self.text_encoder).to(self.device)
@@ -571,7 +570,6 @@ class DenoisingReward(ORM):
                     self.scheduler.set_timesteps(50)
                     for t in self.scheduler.timesteps:
                         latent_model_input = self.scheduler.scale_model_input(latents, t)
-
                         noise_pred_uncond = self.unet(latent_model_input, t, encoder_hidden_states=uncond_embeddings).sample
                         noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
