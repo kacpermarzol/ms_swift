@@ -452,6 +452,8 @@ class DenoisingReward(ORM):
                 num_train_timesteps=1000
             )
 
+            self.alphas_cumprod = self.scheduler.alphas_cumprod.to(self.device)
+
             state_dict = torch.load(unlearned_unet_path, map_location='cpu')
 
             if 'state_dict' in state_dict:
