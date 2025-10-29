@@ -561,13 +561,7 @@ class DenoisingReward(ORM):
 
             with torch.no_grad():
                 for prompt in adversarial_prompts:
-                    sample_dict = {}
-
-                    target_img_path = image_paths[i]
-                    target_image = PIL.Image.open(target_img_path).convert("RGB")
-                    target_image = target_image.resize((width, height))
-                    sample_dict["target"] = target_image
-
+                    sample_dict = {"prompt": prompt}
 
                     text_input = self.tokenizer(
                         prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt",
@@ -618,8 +612,8 @@ class DenoisingReward(ORM):
                     image = (image / 2 + 0.5).clamp(0, 1)
                     image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
                     image_pil = PIL.Image.fromarray(image_np)
-
                     sample_dict["generated"] = image_pil
+
                     images.append(sample_dict)
 
         return rewards, images
