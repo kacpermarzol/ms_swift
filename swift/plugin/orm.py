@@ -567,7 +567,7 @@ class DenoisingReward(ORM):
 
                     latents = torch.randn((1, self.unet.in_channels, 64, 64), device=self.device, dtype=torch.float16)
 
-                    self.scheduler.set_timesteps(50)
+                    self.scheduler.set_timesteps(500)
                     for t in self.scheduler.timesteps:
                         t_tensor = torch.tensor([t], device=self.device).long()
                         latent_model_input = self.scheduler.scale_model_input(latents, t_tensor)
