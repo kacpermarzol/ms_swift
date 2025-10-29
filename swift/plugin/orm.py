@@ -542,31 +542,46 @@ class DenoisingReward(ORM):
 
         if step % 2 == 0 and adversarial_prompts:
             images = []
+            guidance_scale = 7.5
             print(f"[DenoisingReward] Step {step}: Generating {len(adversarial_prompts)} images for visualization...")
+
             with torch.no_grad():
                 for prompt in adversarial_prompts:
-                    text_inputs = self.tokenizer(
+                    text_input = self.tokenizer(
                         prompt,
                         padding="max_length",
                         max_length=self.tokenizer.model_max_length,
                         truncation=True,
                         return_tensors="pt"
                     )
+                    text_embeddings = self.text_encoder(input_ids=text_input.input_ids.to(self.device))[0]
 
-                    text_embeddings = self.text_encoder(input_ids=text_inputs.input_ids.to(self.device))[0]
+                    uncond_input = self.tokenizer(
+                        [""] * text_input.input_ids.shape[0],
+                        padding="max_length",
+                        max_length=self.tokenizer.model_max_length,
+                        truncation=True,
+                        return_tensors="pt"
+                    )
+
+                    uncond_embeddings = self.text_encoder(input_ids=uncond_input.input_ids.to(self.device))[0]
 
                     latents = torch.randn((1, self.unet.in_channels, 64, 64), device=self.device, dtype=torch.float16)
 
                     self.scheduler.set_timesteps(50)
                     for t in self.scheduler.timesteps:
                         latent_model_input = self.scheduler.scale_model_input(latents, t)
-                        noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+
+                        noise_pred_uncond = self.unet(latent_model_input, t, encoder_hidden_states=uncond_embeddings).sample
+                        noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
                         latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
-                    latents = (1 / 0.18215) * latents
+                    latents = latents / 0.18215
                     image = self.vae.decode(latents).sample
                     image = (image / 2 + 0.5).clamp(0, 1)
-                    image_pil = PIL.Image.fromarray((image[0].permute(1, 2, 0).cpu().numpy() * 255).astype("uint8"))
+                    image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
+                    image_pil = PIL.Image.fromarray(image_np)
                     images.append(image_pil)
 
         return rewards, images
