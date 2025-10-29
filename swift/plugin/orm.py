@@ -580,13 +580,10 @@ class DenoisingReward(ORM):
                     text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
 
                     generator = torch.manual_seed(123)
-                    latents = torch.randn(
-                        (1, self.unet.config.in_channels, height // 8, width // 8),
-                        generator=generator,
-                    )
-
+                    latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),generator=generator,)
                     latents = latents.to(self.device)
-                    latents = latents * self.scheduler.init_noise_sigma
+                    latents = (latents * self.scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
+
                     self.scheduler.set_timesteps(num_inference_steps)
 
                     for t in self.scheduler.timesteps:
