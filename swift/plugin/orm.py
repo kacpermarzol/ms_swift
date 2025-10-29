@@ -507,7 +507,7 @@ class DenoisingReward(ORM):
             return -loss.item()
         except Exception as e:
             print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
-            return -torch.float('inf')
+            return -10000
 
     def __call__(self, completions, **kwargs):
         image_paths = kwargs.get('target_img')
