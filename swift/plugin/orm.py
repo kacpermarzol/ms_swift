@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Union, Any
 
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import AutoencoderKL, UNet2DConditionModel, LMSDiscreteScheduler
-from utils.text_encoder import CustomTextEncoder
+from .utils.text_encoder import CustomTextEncoder
 
 import json
 
