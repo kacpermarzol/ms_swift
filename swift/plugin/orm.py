@@ -582,7 +582,13 @@ class DenoisingReward(ORM):
 
                 latents = latents / 0.18215  # SD scaling factor
                 decoded_images = self.vae.decode(latents).sample
-                images = (decoded_images / 2 + 0.5).clamp(0, 1)
+                decoded_images = (decoded_images / 2 + 0.5).clamp(0, 1)
+
+                images = []
+                for i in range(decoded_images.shape[0]):
+                    image_np = (decoded_images[i].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
+                    image_pil = PIL.Image.fromarray(image_np)
+                    images.append(image_pil)
 
         return rewards, images
 
