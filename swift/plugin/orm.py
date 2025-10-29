@@ -2,6 +2,8 @@ import os
 import re
 from typing import TYPE_CHECKING, Dict, List, Union
 
+import wandb
+
 import torch
 import PIL.Image
 import torch.nn.functional as F
@@ -425,9 +427,10 @@ def preprocess_target_image(image, device, resolution = 512):
 
 
 class DenoisingReward(ORM):
-    def __init__(self, base_model_name: str, unlearned_unet_path: str, device: str = "cuda"):
+    def __init__(self, base_model_name: str, unlearned_unet_path: str, reward_report_to: List[str] = ['wandb'], device: str = "cuda"):
         self.device = torch.device(device)
         self.image_cache = {}
+        self.report_to_wandb = 'wandb' in reward_report_to and wandb.run is not None
 
         print(f"[DenoisingReward] Initializing with base model: {base_model_name}")
         print(f"[DenoisingReward] Loading unlearned UNet from: {unlearned_unet_path}")
@@ -532,6 +535,9 @@ class DenoisingReward(ORM):
             clean_latents = self._get_cached_image_latent(img_path)
             reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt)
             rewards.append(reward)
+
+            if self.report_to_wandb:
+                print("OK!")
         return rewards
 
 

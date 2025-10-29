@@ -292,8 +292,10 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
     repetition_n_grams: int = 3
     repetition_max_penalty: float = -1.0
     #denoising reward
+
     base_model_name: str = None
     unlearned_unet_path: str = None
+    reward_report_to: Optional[List[str]] = None
 
     reward_model: Optional[List[str]] = None
     reward_model_plugin: Optional[List[str]] = None
