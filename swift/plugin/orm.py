@@ -518,6 +518,9 @@ class DenoisingReward(ORM):
         batch_size = len(completions)
         rewards = []
         adversarial_prompts = []
+        images = None
+        step = kwargs.get('step', 0)
+
         for i in range(batch_size):
             generated_text = completions[i]
             img_path = image_paths[i]
@@ -537,35 +540,34 @@ class DenoisingReward(ORM):
             reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt)
             rewards.append(reward)
 
-            images = None
-            if kwargs.get('step') % 2 == 0:
-                print(f"[DenoisingReward] Generating images for visualization...")
-                images = []
-                with torch.no_grad():
-                    for prompt in adversarial_prompts:
-                        text_inputs = self.tokenizer(
-                            prompt,
-                            padding="max_length",
-                            max_length=self.tokenizer.model_max_length,
-                            truncation=True,
-                            return_tensors="pt"
-                        )
+        if step % 2 == 0 and adversarial_prompts:
+            images = []
+            print(f"[DenoisingReward] Step {step}: Generating {len(adversarial_prompts)} images for visualization...")
+            with torch.no_grad():
+                for prompt in adversarial_prompts:
+                    text_inputs = self.tokenizer(
+                        prompt,
+                        padding="max_length",
+                        max_length=self.tokenizer.model_max_length,
+                        truncation=True,
+                        return_tensors="pt"
+                    )
 
-                        text_embeddings = self.text_encoder(input_ids=text_inputs.input_ids.to(self.device))[0]
+                    text_embeddings = self.text_encoder(input_ids=text_inputs.input_ids.to(self.device))[0]
 
-                        latents = torch.randn((1, self.unet.in_channels, 64, 64), device=self.device, dtype=torch.float16)
+                    latents = torch.randn((1, self.unet.in_channels, 64, 64), device=self.device, dtype=torch.float16)
 
-                        self.scheduler.set_timesteps(50)
-                        for t in self.scheduler.timesteps:
-                            latent_model_input = self.scheduler.scale_model_input(latents, t)
-                            noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
-                            latents = self.scheduler.step(noise_pred, t, latents).prev_sample
+                    self.scheduler.set_timesteps(50)
+                    for t in self.scheduler.timesteps:
+                        latent_model_input = self.scheduler.scale_model_input(latents, t)
+                        noise_pred = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+                        latents = self.scheduler.step(noise_pred, t, latents).prev_sample
 
-                        latents = (1 / 0.18215) * latents
-                        image = self.vae.decode(latents).sample
-                        image = (image / 2 + 0.5).clamp(0, 1)
-                        image_pil = PIL.Image.fromarray((image[0].permute(1, 2, 0).cpu().numpy() * 255).astype("uint8"))
-                        images.append(image_pil)
+                    latents = (1 / 0.18215) * latents
+                    image = self.vae.decode(latents).sample
+                    image = (image / 2 + 0.5).clamp(0, 1)
+                    image_pil = PIL.Image.fromarray((image[0].permute(1, 2, 0).cpu().numpy() * 255).astype("uint8"))
+                    images.append(image_pil)
 
         return rewards, images
 
