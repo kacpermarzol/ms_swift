@@ -337,11 +337,16 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 else:
                     # Repeat all input columns (but "messages" and "completion") to match the number of generations
                     reward_kwargs.update(RowPreprocessor.rows_to_batched(inputs))
-                    output_reward_func = reward_func(completions, **reward_kwargs)
+                    reward_kwargs.update({'step': self._step})
+                    output_reward_func, images = reward_func(completions, **reward_kwargs)
+
+                    if images is not None:
+                        report_to_wandb = self.args.report_to and 'wandb' in self.args.report_to and wandb.run is not None
+                        if report_to_wandb:
+                            wandb.log({"generated_images": [wandb.Image(img) for img in images]}, step=self._step)
                 output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
                 rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
 
-        # If all reward functions return None for a given row, issue a detailed warning
         if torch.isnan(rewards_per_func).all(dim=1).any():
             nan_row_idx = torch.isnan(rewards_per_func).all(dim=1).nonzero(as_tuple=True)[0][0]
             row_reward_kwargs = {key: value[nan_row_idx] for key, value in reward_kwargs.items()}
@@ -1591,8 +1596,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 table.update({'entropy': list(self._logs['entropy'])[:seen_nums]})
 
             report_to_wandb = self.args.report_to and 'wandb' in self.args.report_to and wandb.run is not None
-            report_to_swanlab = self.args.report_to and 'swanlab' in self.args.report_to and swanlab.get_run(
-            ) is not None
+            report_to_swanlab = self.args.report_to and 'swanlab' in self.args.report_to and swanlab.get_run() is not None
 
             self.jsonl_writer.append(table)
 
