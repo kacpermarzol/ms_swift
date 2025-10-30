@@ -433,6 +433,7 @@ class DenoisingReward(ORM):
 
         print(f"[DenoisingReward] Initializing with base model: {base_model_name}")
         print(f"[DenoisingReward] Loading unlearned UNet from: {unlearned_unet_path}")
+
         try:
             dtype = torch.float16
 
@@ -504,8 +505,7 @@ class DenoisingReward(ORM):
     def _get_reward_score(self,clean_latents, ap):
         try:
             input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
-            input_embeddings = self.id2embedding(input_ids)
-            encoder_hidden_states = self.custom_text_encoder(input_ids=input_ids, inputs_embeds=input_embeddings)[0]
+            encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0]
 
             t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long().item()
             noise = torch.randn_like(clean_latents, device=self.device)
@@ -521,11 +521,6 @@ class DenoisingReward(ORM):
             print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
             return -10000
 
-    def id2embedding(self,input_ids):
-        input_one_hot = F.one_hot(input_ids.view(-1), num_classes=len(self.tokenizer.get_vocab())).to(dtype=self.all_embeddings.dtype)
-        input_one_hot = torch.unsqueeze(input_one_hot,0).to(self.device)
-        input_embeds = input_one_hot @ self.all_embeddings
-        return input_embeds
 
     def __call__(self, completions, **kwargs):
         image_paths = kwargs.get('target_img')
@@ -570,28 +565,17 @@ class DenoisingReward(ORM):
                 for prompt in adversarial_prompts:
                     sample_dict = {"prompt": prompt}
 
-                    text_input = self.tokenizer(
-                        prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt",
-                        truncation=True
-                    )
-                    text_embeddings = self.id2embedding(text_input.input_ids.to(self.device))
-
                     input_ids = self.tokenizer(
                         prompt, padding="max_length", max_length=self.tokenizer.model_max_length,
                         return_tensors="pt", truncation=True
                     ).input_ids.to(self.device)
-
-                    # text_embeddings = self.custom_text_encoder(input_ids=input_ids, inputs_embeds=text_embeddings)[0]
                     text_embeddings = self.text_encoder(input_ids=input_ids)[0]
 
-                    uncond_input = self.tokenizer(
+                    uncond__input_ids = self.tokenizer(
                         [""], padding="max_length", max_length=self.tokenizer.model_max_length,
                         return_tensors="pt"
-                    ).to(self.device)
-
-                    uncond_embeddings = self.id2embedding(uncond_input.input_ids.to(self.device))
-                    # uncond_embeddings = self.custom_text_encoder(input_ids=uncond_input.input_ids.to(self.device),inputs_embeds=uncond_embeddings)[0]
-                    uncond_embeddings = self.text_encoder(input_ids=uncond_input.input_ids.to(self.device))[0]
+                    ).input_ids.to(self.device)
+                    uncond_embeddings = self.text_encoder(input_ids=uncond__input_ids)[0]
 
                     uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
                     text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
@@ -602,7 +586,6 @@ class DenoisingReward(ORM):
                     latents = (latents * self.scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
 
                     self.scheduler.set_timesteps(num_inference_steps)
-
                     for t in self.scheduler.timesteps:
                         latent_model_input = latents
                         latent_model_input = self.scheduler.scale_model_input(latent_model_input, timestep=t)
