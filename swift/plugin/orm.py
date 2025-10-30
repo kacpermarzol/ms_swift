@@ -581,7 +581,8 @@ class DenoisingReward(ORM):
                         return_tensors="pt", truncation=True
                     ).input_ids.to(self.device)
 
-                    text_embeddings = self.custom_text_encoder(input_ids=input_ids, inputs_embeds=text_embeddings)[0]
+                    # text_embeddings = self.custom_text_encoder(input_ids=input_ids, inputs_embeds=text_embeddings)[0]
+                    text_embeddings = self.text_encoder(input_ids=input_ids)[0]
 
                     uncond_input = self.tokenizer(
                         [""], padding="max_length", max_length=self.tokenizer.model_max_length,
@@ -589,7 +590,8 @@ class DenoisingReward(ORM):
                     ).to(self.device)
 
                     uncond_embeddings = self.id2embedding(uncond_input.input_ids.to(self.device))
-                    uncond_embeddings = self.custom_text_encoder(input_ids=uncond_input.input_ids.to(self.device),inputs_embeds=uncond_embeddings)[0]
+                    # uncond_embeddings = self.custom_text_encoder(input_ids=uncond_input.input_ids.to(self.device),inputs_embeds=uncond_embeddings)[0]
+                    uncond_embeddings = self.text_encoder(input_ids=uncond_input.input_ids.to(self.device))[0]
 
                     uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
                     text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
