@@ -514,9 +514,9 @@ class DenoisingReward(ORM):
 
             timestep_tensor = torch.tensor([t], device=self.device).long()
             predicted_noise = self.unet(noisy_latents, timestep_tensor, encoder_hidden_states=encoder_hidden_states).sample
-            # loss = F.mse_loss(predicted_noise, noise, reduction="mean")
-            loss = F.l1_loss(predicted_noise, noise, reduction="mean")
-            return -loss.item() * 10.
+            loss = F.mse_loss(predicted_noise, noise, reduction="mean")
+            # loss = F.l1_loss(predicted_noise, noise, reduction="mean")
+            return -loss.item()
         except Exception as e:
             print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
             return -10000
@@ -606,6 +606,7 @@ class DenoisingReward(ORM):
                     image_pil = PIL.Image.fromarray(image_np)
                     sample_dict["generated"] = image_pil
                     images.append(sample_dict)
+
         return rewards, images
 
 orms = {
