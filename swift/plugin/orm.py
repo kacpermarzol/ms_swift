@@ -488,7 +488,7 @@ class DenoisingReward(ORM):
                 target_tensor = preprocess_target_image(image_pil, self.device)
                 with torch.no_grad():
                     clean_latents = self.vae.encode(target_tensor).latent_dist.mean
-                    clean_latents *= 0.18215  # Apply scaling factor used in ClassifierTask.img2latent
+                    clean_latents *= 0.18215
                 self.image_cache[image_path] = clean_latents
             except Exception as e:
                 print(f"[DenoisingReward] ERROR loading/processing image {image_path}: {e}")
@@ -514,8 +514,8 @@ class DenoisingReward(ORM):
 
             timestep_tensor = torch.tensor([t], device=self.device).long()
             predicted_noise = self.unet(noisy_latents, timestep_tensor, encoder_hidden_states=encoder_hidden_states).sample
-            loss = F.mse_loss(predicted_noise, noise, reduction="mean")
-            # loss = F.l1_loss(predicted_noise, noise, reduction="mean")
+            # loss = F.mse_loss(predicted_noise, noise, reduction="mean")
+            loss = F.l1_loss(predicted_noise, noise, reduction="mean")
             return -loss.item()
         except Exception as e:
             print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
@@ -595,7 +595,6 @@ class DenoisingReward(ORM):
 
                         noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
                         latents = self.scheduler.step(noise_pred, t, latents).prev_sample
-
                     latents = 1 / 0.18215 * latents
 
                     with torch.no_grad():
