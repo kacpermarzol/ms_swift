@@ -493,23 +493,30 @@ class DenoisingReward(ORM):
                 print(f"[DenoisingReward] ERROR loading/processing image {image_path}: {e}")
         return self.image_cache[image_path]
 
+    def split_embd(self,input_embed,orig_prompt_len):
+        sot_embd, mid_embd, _, eot_embd = torch.split(input_embed, [1, orig_prompt_len, self.k, 76-orig_prompt_len-self.k ], dim=1)
+        self.sot_embd = sot_embd
+        self.mid_embd = mid_embd
+        self.eot_embd = eot_embd
+        return sot_embd, mid_embd, eot_embd
+
     @torch.no_grad()
     def _get_reward_score(self,clean_latents, ap):
         try:
-            text_inputs = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt")
-            encoder_hidden_states = self.text_encoder(input_ids=text_inputs.input_ids.to(self.device))[0]
+            input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
+            input_embeddings = self.id2embedding(input_ids)
+            encoder_hidden_states = self.custom_text_encoder(input_ids=input_ids, inputs_embeds=input_embeddings)[0]
+
             t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long().item()
             noise = torch.randn_like(clean_latents, device=self.device)
             alpha_t_cumprod = self.alphas_cumprod[t]
             noisy_latents = clean_latents * (alpha_t_cumprod ** 0.5) + noise * ((1 - alpha_t_cumprod) ** 0.5)
 
             timestep_tensor = torch.tensor([t], device=self.device).long()
-
             predicted_noise = self.unet(noisy_latents, timestep_tensor, encoder_hidden_states=encoder_hidden_states).sample
             loss = F.mse_loss(predicted_noise, noise, reduction="mean")
             # loss = F.l1_loss(predicted_noise, noise, reduction="mean")
             return -loss.item() * 10.
-
         except Exception as e:
             print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
             return -10000
@@ -534,10 +541,10 @@ class DenoisingReward(ORM):
                 match = re.search(r'<answer>(.*?)</answer>', generated_text, re.DOTALL)
                 if match:
                     adversarial_prompt = match.group(1).strip()
-                    adversarial_prompts.append(adversarial_prompt)
                 else:
                     print(f"[DenoisingReward] Warning: Could not find <answer> tag in completion")
-                    adversarial_prompts.append(generated_text)
+                    adversarial_prompt = generated_text
+                adversarial_prompts.append(adversarial_prompt)
             except Exception as e:
                 print(f"[DenoisingReward] Error parsing messages for sample {i}: {e}")
                 continue
@@ -567,7 +574,6 @@ class DenoisingReward(ORM):
                         prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt",
                         truncation=True
                     )
-
                     text_embeddings = self.id2embedding(text_input.input_ids.to(self.device))
 
                     input_ids = self.tokenizer(
