@@ -339,6 +339,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     reward_kwargs.update({'step': self._step})
                     mode = 'train' if self.model.training else 'eval'
                     reward_kwargs.update({'mode': mode})
+                    original_prompt = inputs[0]['messages'][1]['content']
+                    reward_kwargs.update({'original_prompt': original_prompt})
 
                     images = None
 
@@ -356,12 +358,17 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                             best_image_dict = images[best_idx+1] ## becasue the first one is target
                             wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
                             wandb.log({f"EVAL_best_image:": wandb.Image(best_image_dict["generated"], caption=best_image_dict["prompt"])})
+                            original_prompt_dict = images[-1]
+                            wandb.log({"EVAL_No attack": wandb.Image(original_prompt_dict["generated"], caption=original_prompt_dict["original_prompt"])})
                         else:
                             for img_idx, img_dict in enumerate(images):
                                 if "target" in img_dict:
                                     wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
+                                elif "original_prompt" in img_dict:
+                                    wandb.log({"No attack": wandb.Image(img_dict["generated"], caption=img_dict["original_prompt"])})
                                 else:
                                     wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
+
 
 
                 rewards_per_func[:, i] = output_reward_func

@@ -521,6 +521,43 @@ class DenoisingReward(ORM):
             return -10000
 
 
+    def generate_image(self, prompt, height=512, width=512, num_inference_steps=1000, guidance_scale=7.5):
+        input_ids = self.tokenizer(prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt", truncation=True).input_ids.to(self.device)
+        text_embeddings = self.text_encoder(input_ids=input_ids)[0]
+
+        uncond__input_ids = self.tokenizer([""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt").input_ids.to(self.device)
+        uncond_embeddings = self.text_encoder(input_ids=uncond__input_ids)[0]
+
+        uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
+        text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
+
+        generator = torch.manual_seed(self.seed)
+
+        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8), generator=generator)
+        latents = latents.to(self.device)
+        latents = (latents * self.scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
+        self.scheduler.set_timesteps(num_inference_steps)
+
+        for t in self.scheduler.timesteps:
+            latent_model_input = latents
+            latent_model_input = self.scheduler.scale_model_input(latent_model_input, timestep=t)
+
+            noise_pred_uncond = self.unet(latent_model_input, t, encoder_hidden_states=uncond_embeddings).sample
+            noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
+
+            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+            latents = self.scheduler.step(noise_pred, t, latents).prev_sample
+        latents = 1 / 0.18215 * latents
+
+        with torch.no_grad():
+            image = self.vae.decode(latents).sample
+
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
+        image_pil = PIL.Image.fromarray(image_np)
+        return image_pil
+
+
     def __call__(self, completions, **kwargs):
         image_paths = kwargs.get('target_img')
         batch_size = len(completions)
@@ -530,6 +567,7 @@ class DenoisingReward(ORM):
 
         step = kwargs.get('step', -1)
         mode = kwargs.get('mode', False)
+        original_prompt = kwargs.get('original_prompt', "oopsie")
 
         for i in range(batch_size):
             generated_text = completions[i]
@@ -550,15 +588,11 @@ class DenoisingReward(ORM):
             reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt)
             rewards.append(reward)
 
-        if ((step+1) % 10 == 0 or mode=='eval') and adversarial_prompts :
-            guidance_scale = 7.5
-            num_inference_steps = 100
-            height = width = 512
+        if ((step+1) % 10 == 0 or mode=='eval') and adversarial_prompts:
             images = []
 
             target_img_path = image_paths[0]
             target_image = PIL.Image.open(target_img_path).convert("RGB")
-            target_image = target_image.resize((width, height))
             images.append({"target": target_image})
 
             print(f"[DenoisingReward] Step {step}: Generating {len(adversarial_prompts)} images for visualization...")
@@ -566,47 +600,14 @@ class DenoisingReward(ORM):
             with torch.no_grad():
                 for prompt in adversarial_prompts:
                     sample_dict = {"prompt": prompt}
-
-                    input_ids = self.tokenizer(
-                        prompt, padding="max_length", max_length=self.tokenizer.model_max_length,
-                        return_tensors="pt", truncation=True
-                    ).input_ids.to(self.device)
-                    text_embeddings = self.text_encoder(input_ids=input_ids)[0]
-
-                    uncond__input_ids = self.tokenizer(
-                        [""], padding="max_length", max_length=self.tokenizer.model_max_length,
-                        return_tensors="pt"
-                    ).input_ids.to(self.device)
-                    uncond_embeddings = self.text_encoder(input_ids=uncond__input_ids)[0]
-
-                    uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
-                    text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
-
-                    generator = torch.manual_seed(self.seed)
-                    latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),generator=generator,)
-                    latents = latents.to(self.device)
-                    latents = (latents * self.scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
-
-                    self.scheduler.set_timesteps(num_inference_steps)
-                    for t in self.scheduler.timesteps:
-                        latent_model_input = latents
-                        latent_model_input = self.scheduler.scale_model_input(latent_model_input, timestep=t)
-
-                        noise_pred_uncond = self.unet(latent_model_input, t, encoder_hidden_states=uncond_embeddings).sample
-                        noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
-
-                        noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-                        latents = self.scheduler.step(noise_pred, t, latents).prev_sample
-                    latents = 1 / 0.18215 * latents
-
-                    with torch.no_grad():
-                        image = self.vae.decode(latents).sample
-
-                    image = (image / 2 + 0.5).clamp(0, 1)
-                    image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
-                    image_pil = PIL.Image.fromarray(image_np)
-                    sample_dict["generated"] = image_pil
+                    image = self.generate_image(prompt=prompt)
+                    sample_dict["generated"] = image
                     images.append(sample_dict)
+
+                sample_dict = {"original_prompt": original_prompt}
+                image = self.generate_image(prompt=original_prompt)
+                sample_dict["generated"] = image
+                images.append(sample_dict)
 
         return rewards, images
 
