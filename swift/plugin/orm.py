@@ -549,7 +549,7 @@ class DenoisingReward(ORM):
             reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt)
             rewards.append(reward)
 
-        if (step % 10 == 0 and adversarial_prompts) or mode==eval:
+        if ((step+1) % 10 == 0 or mode==eval) and adversarial_prompts :
             guidance_scale = 7.5
             num_inference_steps = 100
             height = width = 512
