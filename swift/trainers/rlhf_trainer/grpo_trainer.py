@@ -352,7 +352,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
                     if images:
                         if mode == 'eval':
-                            print("DEBUG AAA", output_reward_func.shape)
                             best_idx = torch.argmax(output_reward_func)
                             best_image_dict = images[best_idx+1] ## becasue the first one is target
                             wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
