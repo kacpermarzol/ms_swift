@@ -499,7 +499,6 @@ class DenoisingReward(ORM):
         self.eot_embd = eot_embd
         return sot_embd, mid_embd, eot_embd
 
-    @torch.no_grad()
     def _get_reward_score(self,clean_latents, ap):
         try:
             input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
