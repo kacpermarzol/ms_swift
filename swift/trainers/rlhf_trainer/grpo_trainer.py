@@ -177,6 +177,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             inputs = self._buffered_inputs[self._step % num_rollout_samples]
             self._step += 1
         else:
+            print("DEBUG KM !!!! MODE IS NOT TRAIN")
             inputs = self._generate_and_score_completions(generation_batch)
         return inputs
 
