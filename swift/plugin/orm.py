@@ -15,6 +15,7 @@ from diffusers import AutoencoderKL, UNet2DConditionModel, LMSDiscreteScheduler
 from .utils.text_encoder import CustomTextEncoder
 
 import json
+import copy
 
 if TYPE_CHECKING:
     from swift.llm import InferRequest
@@ -505,7 +506,6 @@ class DenoisingReward(ORM):
         try:
             input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
             encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0]
-
             t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()
             noise = torch.randn_like(clean_latents)
             noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
@@ -523,28 +523,31 @@ class DenoisingReward(ORM):
         input_ids = self.tokenizer(prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt", truncation=True).input_ids.to(self.device)
         text_embeddings = self.text_encoder(input_ids=input_ids)[0]
 
-        uncond__input_ids = self.tokenizer([""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt").input_ids.to(self.device)
-        uncond_embeddings = self.text_encoder(input_ids=uncond__input_ids)[0]
+        uncond_input_ids = self.tokenizer([""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt").input_ids.to(self.device)
+        uncond_embeddings = self.text_encoder(input_ids=uncond_input_ids)[0]
 
         uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
         text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
 
         generator = torch.manual_seed(self.seed)
 
-        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8), generator=generator)
-        latents = latents.to(self.device)
-        latents = (latents * self.scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
-        self.scheduler.set_timesteps(num_inference_steps)
+        scheduler = copy.deepcopy(self.scheduler)
+        scheduler.set_timesteps(num_inference_steps)
 
-        for t in self.scheduler.timesteps:
+
+
+        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8), generator=generator).to(self.device)
+        latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
+
+        for t in scheduler.timesteps:
             latent_model_input = latents
-            latent_model_input = self.scheduler.scale_model_input(latent_model_input, timestep=t)
+            latent_model_input = scheduler.scale_model_input(latent_model_input, timestep=t)
 
             noise_pred_uncond = self.unet(latent_model_input, t, encoder_hidden_states=uncond_embeddings).sample
             noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
 
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-            latents = self.scheduler.step(noise_pred, t, latents).prev_sample
+            latents = scheduler.step(noise_pred, t, latents).prev_sample
         latents = 1 / 0.18215 * latents
 
         image = self.vae.decode(latents).sample
