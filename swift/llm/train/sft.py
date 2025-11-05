@@ -178,7 +178,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
     def run(self):
         args = self.args
         train_dataset, val_dataset = self._prepare_dataset()
-
+        print("!!!!!!!!!!!")
         if args.task_type == 'seq_cls':
             args.problem_type = args.problem_type or getattr(self.model.config, 'problem_type', None)
             logger.info(f'args.problem_type: {args.problem_type}')

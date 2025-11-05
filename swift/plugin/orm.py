@@ -424,8 +424,6 @@ def preprocess_target_image(image, device, resolution = 512):
     tensor = preprocessor(image_rgb).unsqueeze(0)
     return tensor.to(device, dtype=torch.float16)
 
-
-
 class DenoisingReward(ORM):
     def __init__(self, base_model_name: str, unlearned_unet_path: str, device: str = "cuda"):
         self.device = torch.device(device)

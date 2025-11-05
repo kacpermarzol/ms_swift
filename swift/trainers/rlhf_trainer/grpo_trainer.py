@@ -211,6 +211,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
     @patch_profiling_decorator
     def _generate_and_score_completions(self, inputs: DataType) -> DataType:
+        print("2222 !!!!!!!!!!!!!")
         # resample for encoding failed data when set truncation_strategy 'delete'
         if self.template.truncation_strategy == 'raise':
             inputs = self.resample_encode_failed_inputs(inputs)
