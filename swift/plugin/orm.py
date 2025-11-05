@@ -509,7 +509,7 @@ class DenoisingReward(ORM):
             t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long().item()
             noise = torch.randn_like(clean_latents, device=self.device)
             alpha_t_cumprod = self.alphas_cumprod[t]
-            noisy_latents = clean_latents * (alpha_t_cumprod ** 0.5) + noise * ((1 - alpha_t_cumprod) ** 0.5)
+            noisy_latents = self.scheduler.add_noise(clean_latents, noise, torch.tensor([t], device=self.device))
 
             timestep_tensor = torch.tensor([t], device=self.device).long()
             predicted_noise = self.unet(noisy_latents, timestep_tensor, encoder_hidden_states=encoder_hidden_states).sample
