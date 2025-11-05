@@ -521,7 +521,7 @@ class DenoisingReward(ORM):
             return -10000
 
 
-    def generate_image(self, prompt, height=512, width=512, num_inference_steps=1000, guidance_scale=7.5):
+    def generate_image(self, prompt, height=512, width=512, num_inference_steps=100, guidance_scale=7.5):
         input_ids = self.tokenizer(prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt", truncation=True).input_ids.to(self.device)
         text_embeddings = self.text_encoder(input_ids=input_ids)[0]
 
@@ -549,9 +549,7 @@ class DenoisingReward(ORM):
             latents = self.scheduler.step(noise_pred, t, latents).prev_sample
         latents = 1 / 0.18215 * latents
 
-        with torch.no_grad():
-            image = self.vae.decode(latents).sample
-
+        image = self.vae.decode(latents).sample
         image = (image / 2 + 0.5).clamp(0, 1)
         image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
         image_pil = PIL.Image.fromarray(image_np)
