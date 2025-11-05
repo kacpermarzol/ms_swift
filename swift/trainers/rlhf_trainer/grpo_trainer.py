@@ -369,8 +369,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                 else:
                                     wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
 
-
-
                 rewards_per_func[:, i] = output_reward_func
 
         if torch.isnan(rewards_per_func).all(dim=1).any():
