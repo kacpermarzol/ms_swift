@@ -506,13 +506,11 @@ class DenoisingReward(ORM):
             input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
             encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0]
 
-            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long().item()
-            noise = torch.randn_like(clean_latents, device=self.device)
-            alpha_t_cumprod = self.alphas_cumprod[t]
-            noisy_latents = self.scheduler.add_noise(clean_latents, noise, torch.tensor([t], device=self.device))
+            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()
+            noise = torch.randn_like(clean_latents)
+            noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
 
-            timestep_tensor = torch.tensor([t], device=self.device).long()
-            predicted_noise = self.unet(noisy_latents, timestep_tensor, encoder_hidden_states=encoder_hidden_states).sample
+            predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
             loss = F.mse_loss(predicted_noise, noise, reduction="mean")
             # loss = F.l1_loss(predicted_noise, noise, reduction="mean")
             return -loss.item()
