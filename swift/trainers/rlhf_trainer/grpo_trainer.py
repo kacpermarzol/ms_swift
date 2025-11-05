@@ -177,7 +177,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             inputs = self._buffered_inputs[self._step % num_rollout_samples]
             self._step += 1
         else:
-            print("DEBUG KM !!!! MODE IS NOT TRAIN")
             inputs = self._generate_and_score_completions(generation_batch)
         return inputs
 
@@ -212,7 +211,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
     @patch_profiling_decorator
     def _generate_and_score_completions(self, inputs: DataType) -> DataType:
-        print("2222 !!!!!!!!!!!!!")
         # resample for encoding failed data when set truncation_strategy 'delete'
         if self.template.truncation_strategy == 'raise':
             inputs = self.resample_encode_failed_inputs(inputs)
@@ -325,8 +323,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         device = self.accelerator.device
         rewards_per_func = torch.zeros((len(inputs), len(self.reward_funcs)), device=device)
         completions = [inp['messages'][-1]['content'] for inp in inputs]
-        for i, (reward_func, reward_model_plugin, reward_func_name) in enumerate(
-                zip(self.reward_funcs, self.reward_model_plugins, self.reward_func_names)):
+        for i, (reward_func, reward_model_plugin, reward_func_name) in enumerate(zip(self.reward_funcs, self.reward_model_plugins, self.reward_func_names)):
             with patch_profiling_context(self, reward_func_name):
                 # reward model
                 reward_kwargs = {'trainer_state': self.state}
@@ -340,19 +337,28 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     # Repeat all input columns (but "messages" and "completion") to match the number of generations
                     reward_kwargs.update(RowPreprocessor.rows_to_batched(inputs))
                     reward_kwargs.update({'step': self._step})
+                    mode = 'train' if self.model.training else 'eval'
+                    reward_kwargs.update({'mode': mode})
 
                     images = None
+
                     if reward_func_name == "DenoisingReward":
                         output_reward_func, images = reward_func(completions, **reward_kwargs)
                     else:
                         output_reward_func = reward_func(completions, **reward_kwargs)
 
                     if images:
-                        for img_idx, img_dict in enumerate(images):
-                            if "target" in img_dict:
-                                wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
-                            else:
-                                wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
+                        if mode == 'eval':
+                            best_idx = torch.argmax(output_reward_func)
+                            best_image_dict = images[best_idx+1] ## becasue the first one is target
+                            wandb.log({"target_image": wandb.Image(images[0]["target"], caption="target")})
+                            wandb.log({f"Best validation:": wandb.Image(best_image_dict["generated"], caption=best_image_dict["prompt"])})
+                        else:
+                            for img_idx, img_dict in enumerate(images):
+                                if "target" in img_dict:
+                                    wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
+                                else:
+                                    wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
 
                 output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
                 rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)

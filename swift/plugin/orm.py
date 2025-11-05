@@ -526,7 +526,10 @@ class DenoisingReward(ORM):
         rewards = []
         adversarial_prompts = []
         images = None
+
         step = kwargs.get('step', -1)
+        mode = kwargs.get('mode', False)
+
         for i in range(batch_size):
             generated_text = completions[i]
             img_path = image_paths[i]
@@ -546,7 +549,7 @@ class DenoisingReward(ORM):
             reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt)
             rewards.append(reward)
 
-        if step % 10 == 0 and adversarial_prompts:
+        if (step % 10 == 0 and adversarial_prompts) or mode==eval:
             guidance_scale = 7.5
             num_inference_steps = 100
             height = width = 512
