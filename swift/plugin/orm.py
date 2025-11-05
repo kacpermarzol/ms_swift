@@ -502,11 +502,10 @@ class DenoisingReward(ORM):
         self.eot_embd = eot_embd
         return sot_embd, mid_embd, eot_embd
 
-    def _get_reward_score(self,clean_latents, ap):
+    def _get_reward_score(self,clean_latents, ap, t):
         try:
             input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
             encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0]
-            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()
             noise = torch.randn_like(clean_latents)
             noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
 
@@ -533,8 +532,6 @@ class DenoisingReward(ORM):
 
         scheduler = copy.deepcopy(self.scheduler)
         scheduler.set_timesteps(num_inference_steps)
-
-
 
         latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8), generator=generator).to(self.device)
         latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
@@ -568,6 +565,8 @@ class DenoisingReward(ORM):
         mode = kwargs.get('mode', False)
         original_prompt = kwargs.get('original_prompt', "oopsie")
 
+        t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()
+
         for i in range(batch_size):
             generated_text = completions[i]
             img_path = image_paths[i]
@@ -584,7 +583,7 @@ class DenoisingReward(ORM):
                 continue
 
             clean_latents = self._get_cached_image_latent(img_path)
-            reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt)
+            reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt, t=t)
             rewards.append(reward)
 
         if ((step+1) % 10 == 0 or mode=='eval') and adversarial_prompts:
