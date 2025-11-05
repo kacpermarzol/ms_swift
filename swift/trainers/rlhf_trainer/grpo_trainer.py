@@ -346,9 +346,12 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         output_reward_func, images = reward_func(completions, **reward_kwargs)
                     else:
                         output_reward_func = reward_func(completions, **reward_kwargs)
+
+                    output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
+                    output_reward_func = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
+                    print("DEBUG AAA", output_reward_func.shape)
                     if images:
                         if mode == 'eval':
-                            print("DEBUG EVAL !!!!!!!!!!!!!!!!!!!")
                             best_idx = torch.argmax(output_reward_func)
                             best_image_dict = images[best_idx+1] ## becasue the first one is target
                             wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
@@ -360,8 +363,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                 else:
                                     wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
 
-                output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
-                rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
+
+                rewards_per_func[:, i] = output_reward_func
 
         if torch.isnan(rewards_per_func).all(dim=1).any():
             nan_row_idx = torch.isnan(rewards_per_func).all(dim=1).nonzero(as_tuple=True)[0][0]
