@@ -349,6 +349,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
                     output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
                     output_reward_func = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
+
                     if images:
                         if mode == 'eval':
                             print("DEBUG AAA", output_reward_func.shape)
