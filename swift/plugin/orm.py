@@ -586,7 +586,7 @@ class DenoisingReward(ORM):
             reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt, t=t)
             rewards.append(reward)
 
-        if ((step+1) % 10 == 0 or mode=='eval') and adversarial_prompts:
+        if ((step+1) % 50 == 0 or mode=='eval') and adversarial_prompts:
             images = []
 
             target_img_path = image_paths[0]
