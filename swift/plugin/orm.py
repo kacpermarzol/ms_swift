@@ -473,6 +473,8 @@ class DenoisingReward(ORM):
             self.text_encoder.requires_grad_(False)
             self.unet.requires_grad_(False)
 
+            self.seed = 0
+
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
         except Exception as e:
             print(f"[DenoisingReward] Error during initialization: {e}")
@@ -580,7 +582,7 @@ class DenoisingReward(ORM):
                     uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
                     text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
 
-                    generator = torch.manual_seed(123)
+                    generator = torch.manual_seed(self.seed)
                     latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),generator=generator,)
                     latents = latents.to(self.device)
                     latents = (latents * self.scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
