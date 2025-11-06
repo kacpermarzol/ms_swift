@@ -809,6 +809,7 @@ class SwiftMixin:
 
     @staticmethod
     def compute_custom_metrics(metrics, key_prefix: str = ''):
+        print("KM DEBUG 456 !!!")
         logs = {}
         # Synchronize keys to avoid getting stuck.
         if dist.is_initialized():
@@ -838,7 +839,6 @@ class SwiftMixin:
         return logs
 
     def log(self, logs: Dict[str, float], *args, **kwargs) -> None:
-        print("KM DEBUG 123")
         mode = 'train' if self.model.training else 'eval'
         metrics = self.custom_metrics[mode]
         prefix = 'eval_' if mode == 'eval' else ''
