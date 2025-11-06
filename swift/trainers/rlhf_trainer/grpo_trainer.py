@@ -434,7 +434,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 self._metrics[mode][f'rewards/{name}/mean'].append(torch.nanmean(col).item())
                 self._metrics[mode][f'rewards/{name}/std'].append(nanstd(col).item())
 
-            if self.mode == "train":
+            if mode == "train":
                 self._metrics[mode]['KM_TEST'].append(1234)
 
         def log_rewards_all(rewards_per_func: torch.Tensor):
