@@ -476,6 +476,7 @@ class BaseMegatronTrainer(ABC):
     def training_log(self, loss_dict, total_loss_dict, learning_rate, decoupled_learning_rate, iteration, loss_scale,
                      report_memory_flag, skipped_iter, grad_norm, params_norm, num_zeros_in_grad):
         """Log training information such as losses, timing, ...."""
+        print("KM DEBUG AAAAA")
         args = get_args()
         timers = get_timers()
         writer = get_tensorboard_writer()
