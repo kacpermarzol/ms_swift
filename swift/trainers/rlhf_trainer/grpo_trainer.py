@@ -411,6 +411,20 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 return advantages / (rewards_std + 1e-4)
             return advantages
 
+        def compute_weight_diff(self):
+            total_diff = 0.0
+            total_params = 0
+            for (name, p1), (_, p2) in zip(self.model.named_parameters(), self.ref_model.named_parameters()):
+                if not p1.requires_grad or p1.shape != p2.shape:
+                    continue
+                diff = torch.norm(p1.detach() - p2.detach()).item()
+                total_diff += diff ** 2
+                total_params += p1.numel()
+            total_diff = total_diff ** 0.5
+            avg_diff = total_diff / (total_params ** 0.5)
+            return total_diff, avg_diff
+
+
         def log_rewards_metrics(rewards: torch.Tensor, rewards_per_func_for_metrics: torch.Tensor):
             """Log reward statistics for monitoring. Only log once per unique request_id."""
             # rewards: [prompt_batch_size, self.num_generations]
@@ -435,7 +449,12 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 self._metrics[mode][f'rewards/{name}/std'].append(nanstd(col).item())
 
             if mode == "train":
-                self._metrics[mode]['KM_TEST'].append(1234)
+            #if mode == "train" and self.state.global_step % 100 == 0:
+                if self.ref_model is not None:
+                    print("KM DEBUG 777")
+                    total_diff, avg_diff = compute_weight_diff()
+                    self._metrics[mode]['weight_diff_total'].append(total_diff)
+                    self._metrics[mode]['weight_diff_avg'].append(avg_diff)
 
         def log_rewards_all(rewards_per_func: torch.Tensor):
             """Log all rewards for debugging."""
