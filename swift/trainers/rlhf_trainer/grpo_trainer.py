@@ -415,7 +415,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 return advantages / (rewards_std + 1e-4)
             return advantages
 
-        def compute_weight_diff(self):
+        def compute_weight_diff():
             if not hasattr(self, "_initial_weights") or self._initial_weights is None:
                 return None, None
 
