@@ -415,6 +415,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             """Log reward statistics for monitoring. Only log once per unique request_id."""
             # rewards: [prompt_batch_size, self.num_generations]
             # rewards_per_func_for_metrics: [prompt_batch_size*self.num_generations, self.num_reward_funcs]
+            print("KM DEBUG 999")
             mode = 'train' if self.model.training else 'eval'
             group_rewards = rewards.view(-1, self.num_generations)
             rewards_mean = group_rewards.mean(-1).mean().item()

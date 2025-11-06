@@ -840,7 +840,6 @@ class SwiftMixin:
         return logs
 
     def log(self, logs: Dict[str, float], *args, **kwargs) -> None:
-        print("KM DEBUG 000")
         print(logs.keys())
         mode = 'train' if self.model.training else 'eval'
         metrics = self.custom_metrics[mode]
