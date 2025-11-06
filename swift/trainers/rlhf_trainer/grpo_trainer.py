@@ -450,6 +450,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
             if mode == "train":
             #if mode == "train" and self.state.global_step % 100 == 0:
+                print("KM DEBUG 666", self.ref_model)
                 if self.ref_model is not None:
                     print("KM DEBUG 777")
                     total_diff, avg_diff = compute_weight_diff()
