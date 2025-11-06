@@ -809,7 +809,6 @@ class SwiftMixin:
 
     @staticmethod
     def compute_custom_metrics(metrics, key_prefix: str = ''):
-        print("KM DEBUG 456 !!!")
         logs = {}
         # Synchronize keys to avoid getting stuck.
         if dist.is_initialized():
@@ -821,6 +820,8 @@ class SwiftMixin:
 
         for k, metric in sorted(metrics.items()):
             k = f'{key_prefix}{k}'
+            print("KM DEBUG 789")
+            print(k)
             value = metric.compute()
             metric.reset()
             if isinstance(value, dict):
