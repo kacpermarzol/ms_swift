@@ -79,6 +79,10 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         self.vllm_client = kwargs.pop('vllm_client', None)
         self.chord_sft_dataset = kwargs.pop('chord_sft_dataset', None)
         super().__init__(model, ref_model, *_args, **kwargs)
+
+        self._initial_weights = {
+            name: p.detach().clone().to("cpu") for name, p in self.model.named_parameters() if p.requires_grad}
+
         self.prepare_rollout()
         self._prepare_rewards(reward_funcs, reward_model, **kwargs)
 
@@ -412,18 +416,22 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             return advantages
 
         def compute_weight_diff(self):
+            if not hasattr(self, "_initial_weights") or self._initial_weights is None:
+                return None, None
+
             total_diff = 0.0
             total_params = 0
-            for (name, p1), (_, p2) in zip(self.model.named_parameters(), self.ref_model.named_parameters()):
-                if not p1.requires_grad or p1.shape != p2.shape:
+
+            for name, p in self.model.named_parameters():
+                if name not in self._initial_weights or not p.requires_grad:
                     continue
-                diff = torch.norm(p1.detach() - p2.detach()).item()
+                base_p = self._initial_weights[name].to(p.device)
+                diff = torch.norm(p.detach() - base_p).item()
                 total_diff += diff ** 2
-                total_params += p1.numel()
+                total_params += p.numel()
             total_diff = total_diff ** 0.5
             avg_diff = total_diff / (total_params ** 0.5)
             return total_diff, avg_diff
-
 
         def log_rewards_metrics(rewards: torch.Tensor, rewards_per_func_for_metrics: torch.Tensor):
             """Log reward statistics for monitoring. Only log once per unique request_id."""
@@ -448,12 +456,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 self._metrics[mode][f'rewards/{name}/mean'].append(torch.nanmean(col).item())
                 self._metrics[mode][f'rewards/{name}/std'].append(nanstd(col).item())
 
-            if mode == "train":
-            #if mode == "train" and self.state.global_step % 100 == 0:
-                print("KM DEBUG 666", self.ref_model)
-                if self.ref_model is not None:
-                    print("KM DEBUG 777")
-                    total_diff, avg_diff = compute_weight_diff()
+            if mode == "train":                     #if mode == "train" and self.state.global_step % 100 == 0:
+                total_diff, avg_diff = compute_weight_diff()
+                if total_diff is not None:
                     self._metrics[mode]['weight_diff_total'].append(total_diff)
                     self._metrics[mode]['weight_diff_avg'].append(avg_diff)
 
