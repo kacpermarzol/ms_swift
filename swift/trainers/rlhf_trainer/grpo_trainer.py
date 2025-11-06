@@ -415,7 +415,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             """Log reward statistics for monitoring. Only log once per unique request_id."""
             # rewards: [prompt_batch_size, self.num_generations]
             # rewards_per_func_for_metrics: [prompt_batch_size*self.num_generations, self.num_reward_funcs]
-            print("KM DEBUG 999")
             mode = 'train' if self.model.training else 'eval'
             group_rewards = rewards.view(-1, self.num_generations)
             rewards_mean = group_rewards.mean(-1).mean().item()
@@ -434,6 +433,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 col = rewards_per_func_for_metrics[:, i]
                 self._metrics[mode][f'rewards/{name}/mean'].append(torch.nanmean(col).item())
                 self._metrics[mode][f'rewards/{name}/std'].append(nanstd(col).item())
+
+            if self.mode == "train":
+                self._metrics[mode]['KM_TEST'].append(1234)
 
         def log_rewards_all(rewards_per_func: torch.Tensor):
             """Log all rewards for debugging."""
