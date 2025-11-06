@@ -818,6 +818,7 @@ class SwiftMixin:
                 if key not in metrics:
                     metrics[key]
 
+        print("AAAAA", metrics)
         for k, metric in sorted(metrics.items()):
             k = f'{key_prefix}{k}'
             print("KM DEBUG 789")
@@ -834,9 +835,12 @@ class SwiftMixin:
                         logs[new_k] = val
             else:
                 logs[k] = value
+
+        print("BBBB", logs)
         for k in list(logs.keys()):
             if logs[k] is None:
                 logs.pop(k)
+        print("CCCCC", logs)
         return logs
 
     def log(self, logs: Dict[str, float], *args, **kwargs) -> None:
