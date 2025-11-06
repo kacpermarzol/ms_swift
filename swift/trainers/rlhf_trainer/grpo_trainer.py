@@ -1582,6 +1582,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         return inputs
 
     def log(self, logs: Dict[str, float], start_time: Optional[float] = None) -> None:
+        print("KM DEBUG !!!!!1")
         mode = 'train' if self.model.training else 'eval'
         metrics = {key: sum(val) / len(val) for key, val in self._metrics[mode].items()}  # average the metrics
 
