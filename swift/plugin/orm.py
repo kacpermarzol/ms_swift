@@ -476,8 +476,6 @@ class DenoisingReward(ORM):
             self.unet.requires_grad_(False)
 
             self.seed = 1234
-            self.gen = torch.Generator(device=self.device)
-            self.gen.manual_seed(self.seed)
 
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
         except Exception as e:
@@ -531,7 +529,10 @@ class DenoisingReward(ORM):
         scheduler = copy.deepcopy(self.scheduler)
         scheduler.set_timesteps(num_inference_steps)
 
-        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),  generator=self.gen, device=self.device, dtype=self.unet.dtype)
+        gen = torch.Generator(device=self.device)
+        gen.manual_seed(self.seed)
+
+        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),  generator=gen, device=self.device, dtype=self.unet.dtype)
         latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
 
         for t in scheduler.timesteps:
@@ -564,7 +565,6 @@ class DenoisingReward(ORM):
         original_prompt = kwargs.get('original_prompt', "oopsie")
 
         t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()
-
         for i in range(batch_size):
             generated_text = completions[i]
             img_path = image_paths[i]
