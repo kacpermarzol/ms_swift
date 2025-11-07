@@ -20,6 +20,7 @@ import copy
 if TYPE_CHECKING:
     from swift.llm import InferRequest
 
+from torchvision.transforms.functional import InterpolationMode
 
 class ORM:
 
@@ -414,16 +415,18 @@ class SoftOverlong(ORM):
 
 
 @torch.no_grad()
-def preprocess_target_image(image, device, resolution = 512):
-    preprocessor = transforms.Compose([
-        # transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILNEAR),
-        # transforms.CenterCrop(resolution),
+def preprocess_target_image(image, size = 512, interpolation=InterpolationMode.BICUBIC):
+
+    transform = transforms.Compose([
+        transforms.Resize(size, interpolation=interpolation),
+        transforms.CenterCrop(size),
+        transforms,
         transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
+        transforms.Normalize([0.5], [0.5])
     ])
-    image_rgb = image.convert("RGB")
-    tensor = preprocessor(image_rgb).unsqueeze(0)
-    return tensor.to(device, dtype=torch.float16)
+
+    image = transform(image)
+    return image
 
 class DenoisingReward(ORM):
     def __init__(self, base_model_name: str, unlearned_unet_path: str, device: str = "cuda"):
@@ -475,6 +478,8 @@ class DenoisingReward(ORM):
             self.unet.requires_grad_(False)
 
             self.seed = 1234
+            self.gen = torch.Generator(device=self.device)
+            self.gen.manual_seed(self.seed)
 
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
         except Exception as e:
@@ -487,13 +492,15 @@ class DenoisingReward(ORM):
 
         print(f"[DenoisingReward] Caching image: {image_path}")
         try:
-            image_pil = PIL.Image.open(image_path)
-            target_tensor = preprocess_target_image(image_pil, self.device)
+            image_pil = PIL.Image.open(image_path).convert("RGB")
+            target_tensor = preprocess_target_image(image_pil).unsqueeze(0).to(self.device)
+
             with torch.no_grad():
                 clean_latents = self.vae.encode(target_tensor).latent_dist.mean
                 clean_latents *= 0.18215
             self.image_cache[image_path] = clean_latents
             return clean_latents
+
         except Exception as e:
             print(f"[DenoisingReward] ERROR loading/processing image {image_path}: {e}")
             return None
@@ -524,13 +531,10 @@ class DenoisingReward(ORM):
         uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
         text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
 
-        gen = torch.Generator(device=self.device)
-        gen.manual_seed(self.seed)
-
         scheduler = copy.deepcopy(self.scheduler)
         scheduler.set_timesteps(num_inference_steps)
 
-        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),  generator=gen, device=self.device, dtype=self.unet.dtype)
+        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),  generator=self.gen, device=self.device, dtype=self.unet.dtype)
         latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
 
         for t in scheduler.timesteps:
@@ -584,7 +588,7 @@ class DenoisingReward(ORM):
             reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt, t=t)
             rewards.append(reward)
 
-        if ((step+1) % 50 == 0 or mode=='eval') and adversarial_prompts:
+        if ((step+1) % 50 == 1 or mode=='eval') and adversarial_prompts:
             images = []
 
             target_img_path = image_paths[0]
