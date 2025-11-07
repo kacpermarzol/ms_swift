@@ -1,4 +1,5 @@
 import os
+import random
 import re
 from typing import TYPE_CHECKING, Dict, List, Union
 
@@ -525,7 +526,7 @@ class DenoisingReward(ORM):
         text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
 
         gen = torch.Generator(device=self.device)
-        gen.manual_seed(self.seed)
+        gen.manual_seed(random.randint(0, 2**32 - 1))
 
         scheduler = copy.deepcopy(self.scheduler)
         scheduler.set_timesteps(num_inference_steps)
@@ -596,7 +597,7 @@ class DenoisingReward(ORM):
             with torch.no_grad():
                 for prompt in adversarial_prompts:
                     sample_dict = {"prompt": prompt}
-                    image = self.generate_image(prompt=prompt)
+                    image = self.generate_image(prompt=original_prompt)
                     sample_dict["generated"] = image
                     images.append(sample_dict)
 
