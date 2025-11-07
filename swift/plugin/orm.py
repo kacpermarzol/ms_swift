@@ -414,13 +414,11 @@ class SoftOverlong(ORM):
 
 
 
-@torch.no_grad()
 def preprocess_target_image(image, size = 512, interpolation=InterpolationMode.BICUBIC):
 
     transform = transforms.Compose([
         transforms.Resize(size, interpolation=interpolation),
         transforms.CenterCrop(size),
-        transforms,
         transforms.ToTensor(),
         transforms.Normalize([0.5], [0.5])
     ])
@@ -493,8 +491,7 @@ class DenoisingReward(ORM):
         print(f"[DenoisingReward] Caching image: {image_path}")
         try:
             image_pil = PIL.Image.open(image_path).convert("RGB")
-            target_tensor = preprocess_target_image(image_pil)
-            target_tensor = target_tensor.unsqueeze(0).to(self.device)
+            target_tensor = preprocess_target_image(image_pil).unsqueeze(0).to(self.device)
             with torch.no_grad():
                 clean_latents = self.vae.encode(target_tensor).latent_dist.mean
                 clean_latents *= 0.18215
