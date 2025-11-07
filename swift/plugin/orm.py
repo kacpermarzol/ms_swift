@@ -439,8 +439,8 @@ class DenoisingReward(ORM):
             self.vae = AutoencoderKL.from_pretrained(base_model_name, subfolder="vae").to(dtype=dtype, device=self.device)
             self.tokenizer = CLIPTokenizer.from_pretrained(base_model_name, subfolder="tokenizer")
             self.text_encoder = CLIPTextModel.from_pretrained(base_model_name, subfolder="text_encoder").to(dtype=dtype, device=self.device)
-            self.custom_text_encoder = CustomTextEncoder(self.text_encoder).to(self.device)
-            self.all_embeddings = self.custom_text_encoder.get_all_embedding().unsqueeze(0)
+            # self.custom_text_encoder = CustomTextEncoder(self.text_encoder).to(self.device)
+            # self.all_embeddings = self.custom_text_encoder.get_all_embedding().unsqueeze(0)
 
             unet_config = UNet2DConditionModel.load_config(base_model_name, subfolder="unet")
             with torch.no_grad():
@@ -474,7 +474,7 @@ class DenoisingReward(ORM):
             self.text_encoder.requires_grad_(False)
             self.unet.requires_grad_(False)
 
-            self.seed = 0
+            self.seed = 42
 
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
         except Exception as e:
