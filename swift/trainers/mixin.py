@@ -820,6 +820,7 @@ class SwiftMixin:
 
         for k, metric in sorted(metrics.items()):
             k = f'{key_prefix}{k}'
+            print(k)
             value = metric.compute()
             metric.reset()
             if isinstance(value, dict):
@@ -832,16 +833,18 @@ class SwiftMixin:
                         logs[new_k] = val
             else:
                 logs[k] = value
+
         for k in list(logs.keys()):
             if logs[k] is None:
                 logs.pop(k)
         return logs
 
     def log(self, logs: Dict[str, float], *args, **kwargs) -> None:
+        print(logs.keys())
         mode = 'train' if self.model.training else 'eval'
         metrics = self.custom_metrics[mode]
         prefix = 'eval_' if mode == 'eval' else ''
-        logs.update(self.compute_custom_metrics(metrics, prefix))
+        logs.update(self.compute_custom_metrics(metrics, prefix)) ## km - does nothing yet
         return super().log(logs, *args, **kwargs)
 
     def _maybe_log_save_evaluate(self, tr_loss, *args, **kwargs):

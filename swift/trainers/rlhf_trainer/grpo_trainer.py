@@ -79,6 +79,10 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         self.vllm_client = kwargs.pop('vllm_client', None)
         self.chord_sft_dataset = kwargs.pop('chord_sft_dataset', None)
         super().__init__(model, ref_model, *_args, **kwargs)
+
+        self._initial_weights = {
+            name: p.detach().clone().to("cpu") for name, p in self.model.named_parameters() if p.requires_grad}
+
         self.prepare_rollout()
         self._prepare_rewards(reward_funcs, reward_model, **kwargs)
 
@@ -339,6 +343,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     reward_kwargs.update({'step': self._step})
                     mode = 'train' if self.model.training else 'eval'
                     reward_kwargs.update({'mode': mode})
+                    original_prompt = inputs[0]['messages'][1]['content']
+                    reward_kwargs.update({'original_prompt': original_prompt})
 
                     images = None
 
@@ -356,13 +362,16 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                             best_image_dict = images[best_idx+1] ## becasue the first one is target
                             wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
                             wandb.log({f"EVAL_best_image:": wandb.Image(best_image_dict["generated"], caption=best_image_dict["prompt"])})
+                            original_prompt_dict = images[-1]
+                            wandb.log({"EVAL_No attack": wandb.Image(original_prompt_dict["generated"], caption=original_prompt_dict["original_prompt"])})
                         else:
                             for img_idx, img_dict in enumerate(images):
                                 if "target" in img_dict:
                                     wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
+                                elif "original_prompt" in img_dict:
+                                    wandb.log({"No attack": wandb.Image(img_dict["generated"], caption=img_dict["original_prompt"])})
                                 else:
                                     wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
-
 
                 rewards_per_func[:, i] = output_reward_func
 
@@ -406,6 +415,24 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 return advantages / (rewards_std + 1e-4)
             return advantages
 
+        def compute_weight_diff():
+            if not hasattr(self, "_initial_weights") or self._initial_weights is None:
+                return None, None
+
+            total_diff = 0.0
+            total_params = 0
+
+            for name, p in self.model.named_parameters():
+                if name not in self._initial_weights or not p.requires_grad:
+                    continue
+                base_p = self._initial_weights[name].to(p.device)
+                diff = torch.norm(p.detach() - base_p).item()
+                total_diff += diff ** 2
+                total_params += p.numel()
+            total_diff = total_diff ** 0.5
+            avg_diff = total_diff / (total_params ** 0.5)
+            return total_diff, avg_diff
+
         def log_rewards_metrics(rewards: torch.Tensor, rewards_per_func_for_metrics: torch.Tensor):
             """Log reward statistics for monitoring. Only log once per unique request_id."""
             # rewards: [prompt_batch_size, self.num_generations]
@@ -428,6 +455,12 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 col = rewards_per_func_for_metrics[:, i]
                 self._metrics[mode][f'rewards/{name}/mean'].append(torch.nanmean(col).item())
                 self._metrics[mode][f'rewards/{name}/std'].append(nanstd(col).item())
+
+            if mode == "train":                     #if mode == "train" and self.state.global_step % 100 == 0:
+                total_diff, avg_diff = compute_weight_diff()
+                if total_diff is not None:
+                    self._metrics[mode]['weight_diff_total'].append(total_diff)
+                    self._metrics[mode]['weight_diff_avg'].append(avg_diff)
 
         def log_rewards_all(rewards_per_func: torch.Tensor):
             """Log all rewards for debugging."""
