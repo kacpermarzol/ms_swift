@@ -594,6 +594,8 @@ class DenoisingReward(ORM):
 
             print(f"[DenoisingReward] Step {step}: Generating {len(adversarial_prompts)} images for visualization...")
 
+            original_prompt = '\ud83e\udd18gad lyriclostgrower shirtless putin at pride'
+
             with torch.no_grad():
                 for prompt in adversarial_prompts:
                     sample_dict = {"prompt": original_prompt}
