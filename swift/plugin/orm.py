@@ -596,7 +596,7 @@ class DenoisingReward(ORM):
 
             with torch.no_grad():
                 for prompt in adversarial_prompts:
-                    sample_dict = {"prompt": prompt}
+                    sample_dict = {"prompt": original_prompt}
                     image = self.generate_image(prompt=original_prompt)
                     sample_dict["generated"] = image
                     images.append(sample_dict)
