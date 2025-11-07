@@ -474,7 +474,7 @@ class DenoisingReward(ORM):
             self.text_encoder.requires_grad_(False)
             self.unet.requires_grad_(False)
 
-            self.seed = 42
+            self.seed = 1234
 
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
         except Exception as e:
