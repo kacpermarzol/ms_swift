@@ -474,6 +474,7 @@ class DenoisingReward(ORM):
             self.vae.requires_grad_(False)
             self.text_encoder.requires_grad_(False)
             self.unet.requires_grad_(False)
+            self.tokenizer.requires_grad_(False)
 
             self.seed = 1234
 
