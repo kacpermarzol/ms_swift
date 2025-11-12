@@ -356,6 +356,12 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                     output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
                     output_reward_func = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
 
+                    mask = ~torch.isnan(output_reward_func)
+                    if mask.any():  
+                        mean = output_reward_func[mask].mean()
+                        std = output_reward_func[mask].std(unbiased=False) + 1e-8
+                        output_reward_func[mask] = (output_reward_func[mask] - mean) / std
+
                     if images:
                         if mode == 'eval':
                             best_idx = torch.argmax(output_reward_func)
