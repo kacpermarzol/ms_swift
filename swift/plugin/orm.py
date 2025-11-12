@@ -512,7 +512,7 @@ class DenoisingReward(ORM):
             predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
             loss = F.mse_loss(predicted_noise, noise, reduction="mean")
             # loss = F.l1_loss(predicted_noise, noise, reduction="mean")
-            return -loss.item()
+            return -loss 
         except Exception as e:
             print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
             return -10000
