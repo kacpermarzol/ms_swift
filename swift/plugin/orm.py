@@ -600,7 +600,7 @@ class DenoisingReward(ORM):
                 rewards = - (0.8 * loss_mse + 0.2 * loss_l1)
             rewards = rewards.detach().cpu().tolist()
 
-        if ((step+1) % 50 == 1 or mode=='eval') and adversarial_prompts:
+        if ((step+1) % 50 == 0 or mode=='eval') and adversarial_prompts:
             images = []
 
             target_img_path = image_paths[0]
