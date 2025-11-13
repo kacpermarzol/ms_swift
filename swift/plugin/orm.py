@@ -575,12 +575,12 @@ class DenoisingReward(ORM):
             clean_latents = clean_latents.repeat(batch_size, 1, 1, 1)
             t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,)).to(self.device)
 
-            # noise = torch.randn_like(clean_latents)
-            # noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
-            # noisy_latents = noisy_latents.repeat(batch_size, 1, 1, 1)  
-
             noise = torch.randn_like(clean_latents)
             noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
+            noisy_latents = noisy_latents.repeat(batch_size, 1, 1, 1)  
+
+            # noise = torch.randn_like(clean_latents)
+            # noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
      
             inputs_ids = self.tokenizer(
                 adversarial_prompts,
@@ -591,7 +591,7 @@ class DenoisingReward(ORM):
             ).input_ids.to(self.device)
 
             encoder_hidden_states = self.text_encoder(inputs_ids)[0]
-            
+
             with torch.autocast(device_type=self.device.type, dtype=torch.float16):
                 predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states).sample
                 loss_mse = F.mse_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
