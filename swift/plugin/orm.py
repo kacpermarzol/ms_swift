@@ -413,200 +413,364 @@ class SoftOverlong(ORM):
 
 
 
+# --- imports ---
+import copy
+import re
+from typing import List, Tuple, Optional, Dict, Any
+from collections.abc import Mapping
+
+import torch
+import torch.nn.functional as F
+from torchvision import transforms
+import PIL
+from PIL import Image
+
+from diffusers import (
+    AutoencoderKL,
+    UNet2DConditionModel,
+    LMSDiscreteScheduler,
+    DDPMScheduler,
+)
+from transformers import CLIPTokenizer, CLIPTextModel
+
+# --- helpers ---
+
+def _randn_like(x: torch.Tensor, *, generator: Optional[torch.Generator] = None) -> torch.Tensor:
+    """Losowanie N(0,1) kompatybilne z wersjami PyTorch bez wsparcia generatora w randn_like."""
+    return torch.randn(x.shape, dtype=x.dtype, device=x.device, generator=generator)
+
+def _pad_to_multiple_of_8(t: torch.Tensor) -> torch.Tensor:
+    # t: [B, C, H, W], pad symetryczny do najbliższej wielokrotności 8
+    _, _, h, w = t.shape
+    pad_h = (8 - (h % 8)) % 8
+    pad_w = (8 - (w % 8)) % 8
+    pad = (pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2)  # (left, right, top, bottom)
+    return F.pad(t, pad, mode="reflect")
+
+# --- preprocessing ---
+
 @torch.no_grad()
-def preprocess_target_image(image, device, resolution = 512):
-    preprocessor = transforms.Compose([
-        # transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILNEAR),
-        # transforms.CenterCrop(resolution),
+def preprocess_target_image(image: Image.Image, device: torch.device, resolution: Optional[int] = None) -> torch.Tensor:
+    """
+    PIL.Image -> tensor [1,3,H,W] w zakresie [-1,1].
+    Jeśli resolution=None: brak resize/crop. Tylko pad do wielokrotności 8.
+    Jeśli resolution=int: resize+centercrop do kwadratu 'resolution'.
+    """
+    if resolution is None:
+        pre = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
+        img = image.convert("RGB")
+        t = pre(img).unsqueeze(0).to(device=device, dtype=torch.float32)
+        return _pad_to_multiple_of_8(t)
+
+    pre = transforms.Compose([
+        transforms.Resize(resolution, interpolation=transforms.InterpolationMode.BILINEAR),
+        transforms.CenterCrop(resolution),
         transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5]),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
     ])
-    image_rgb = image.convert("RGB")
-    tensor = preprocessor(image_rgb).unsqueeze(0)
-    return tensor.to(device, dtype=torch.float16)
+    img = image.convert("RGB")
+    t = pre(img).unsqueeze(0).to(device=device, dtype=torch.float32)
+    return t
+
 
 class DenoisingReward(ORM):
-    def __init__(self, base_model_name: str, unlearned_unet_path: str, device: str = "cuda"):
-        self.device = torch.device(device)
-        self.image_cache = {}
+    """
+    Reward: MSE między predykcją UNet a celem (epsilon/velocity) przy DDPM noisingu.
+    Wizualizacja: sampling przez oddzielny scheduler (LMS domyślnie).
+    """
 
-        print(f"[DenoisingReward] Initializing with base model: {base_model_name}")
-        print(f"[DenoisingReward] Loading unlearned UNet from: {unlearned_unet_path}")
+    def __init__(
+        self,
+        base_model_name: str,
+        unlearned_unet_path: str,
+        device: str = "cuda",
+        *,
+        input_resolution: Optional[int] = None,  # None => brak resize w reward
+        compute_dtype: torch.dtype = torch.float16,
+        reward_num_timesteps: int = 5,
+        normalize_batch_reward: bool = True,
+        sampler_kind: str = "lms",
+        seed: int = 42,
+    ):
+        self.device = torch.device(device)
+        self.image_cache: Dict[str, torch.Tensor] = {}
+        self.input_resolution = input_resolution
+        self.compute_dtype = compute_dtype
+        self.reward_num_timesteps = max(1, int(reward_num_timesteps))
+        self.normalize_batch_reward = normalize_batch_reward
+        self.sampler_kind = sampler_kind.lower()
+        self.seed = int(seed)
+
+        print(f"[DenoisingReward] base_model={base_model_name}")
+        print(f"[DenoisingReward] unlearned_unet_path={unlearned_unet_path}")
 
         try:
-            dtype = torch.float16
+            # --- komponenty SD ---
+            self.vae = AutoencoderKL.from_pretrained(base_model_name, subfolder="vae").to(device=self.device)
+            self.latent_scaling: float = float(getattr(self.vae.config, "scaling_factor", 0.18215))
 
-            self.vae = AutoencoderKL.from_pretrained(base_model_name, subfolder="vae").to(dtype=dtype, device=self.device)
             self.tokenizer = CLIPTokenizer.from_pretrained(base_model_name, subfolder="tokenizer")
-            self.text_encoder = CLIPTextModel.from_pretrained(base_model_name, subfolder="text_encoder").to(dtype=dtype, device=self.device)
-            # self.custom_text_encoder = CustomTextEncoder(self.text_encoder).to(self.device)
-            # self.all_embeddings = self.custom_text_encoder.get_all_embedding().unsqueeze(0)
+            self.text_encoder = CLIPTextModel.from_pretrained(base_model_name, subfolder="text_encoder").to(
+                dtype=self.compute_dtype, device=self.device
+            )
 
             unet_config = UNet2DConditionModel.load_config(base_model_name, subfolder="unet")
             with torch.no_grad():
-                self.unet = UNet2DConditionModel.from_config(unet_config).to(dtype=dtype)
+                self.unet = UNet2DConditionModel.from_config(unet_config).to(
+                    dtype=self.compute_dtype, device=self.device
+                )
 
-            self.scheduler = LMSDiscreteScheduler(
+            # --- scheduler do NOISINGU (reward) ---
+            # SD 1.4 używa predykcji epsilon.
+            self.train_scheduler = DDPMScheduler(
                 beta_start=0.00085,
                 beta_end=0.012,
                 beta_schedule="scaled_linear",
-                num_train_timesteps=1000
+                num_train_timesteps=1000,
+                prediction_type="epsilon",
+            )
+            _pt = (self.train_scheduler.config.get("prediction_type", "epsilon")
+                   if isinstance(self.train_scheduler.config, Mapping) else "epsilon")
+
+            # --- scheduler do GENERACJI (wizualizacja) ---
+            self.sample_scheduler = LMSDiscreteScheduler(
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                num_train_timesteps=1000,
             )
 
-            self.alphas_cumprod = self.scheduler.alphas_cumprod.to(self.device)
+            # --- wczytanie wag UNet ---
+            state_dict = torch.load(unlearned_unet_path, map_location="cpu")
+            if "state_dict" in state_dict:
+                state_dict = state_dict["state_dict"]
+            elif "model" in state_dict:
+                state_dict = state_dict["model"]
+            state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+            self.unet.load_state_dict(state_dict, strict=True)
 
-            state_dict = torch.load(unlearned_unet_path, map_location='cpu')
+            # --- eval i zamrożenie ---
+            self.vae.eval().requires_grad_(False)
+            self.text_encoder.eval().requires_grad_(False)
+            self.unet.eval().requires_grad_(False)
 
-            if 'state_dict' in state_dict:
-                state_dict = state_dict['state_dict']
-            elif 'model' in state_dict:
-                state_dict = state_dict['model']
-
-            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-
-            self.unet.load_state_dict(state_dict)
-            self.unet = self.unet.to(self.device)
-
-            self.vae.eval()
-            self.text_encoder.eval()
-            self.unet.eval()
-            self.vae.requires_grad_(False)
-            self.text_encoder.requires_grad_(False)
-            self.unet.requires_grad_(False)
-
-            self.seed = 42
-
-            print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
+            print(f"[DenoisingReward] Loaded UNet. prediction_type(train_scheduler)={_pt}")
+            print(f"[DenoisingReward] VAE scaling_factor={self.latent_scaling:.6f}")
         except Exception as e:
             print(f"[DenoisingReward] Error during initialization: {e}")
             raise
 
-    def _get_cached_image_latent(self, image_path):
+    # --- cache latentów ---
+
+    def _get_cached_image_latent(self, image_path: str) -> Optional[torch.Tensor]:
         if image_path in self.image_cache:
             return self.image_cache[image_path]
 
         print(f"[DenoisingReward] Caching image: {image_path}")
         try:
             image_pil = PIL.Image.open(image_path)
-            target_tensor = preprocess_target_image(image_pil, self.device)
+        except Exception as e:
+            print(f"[DenoisingReward] ERROR opening image {image_path}: {e}")
+            return None
+
+        try:
+            target_tensor = preprocess_target_image(image_pil, self.device, resolution=self.input_resolution)
             with torch.no_grad():
-                clean_latents = self.vae.encode(target_tensor).latent_dist.mean
-                clean_latents *= 0.18215
+                posterior = self.vae.encode(target_tensor)
+                clean_latents = posterior.latent_dist.mean  # [1,4,H/8,W/8]
+                clean_latents = clean_latents * self.latent_scaling
+                clean_latents = clean_latents.to(device=self.device, dtype=self.compute_dtype)
             self.image_cache[image_path] = clean_latents
             return clean_latents
         except Exception as e:
-            print(f"[DenoisingReward] ERROR loading/processing image {image_path}: {e}")
+            print(f"[DenoisingReward] ERROR processing image {image_path}: {e}")
             return None
 
-    def _get_reward_score(self,clean_latents, ap, t):
-        try:
-            input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
-            encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0]
-            noise = torch.randn_like(clean_latents)
-            noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
+    # --- reward dla jednego promptu ---
 
-            predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
-            loss = F.mse_loss(predicted_noise, noise, reduction="mean")
-            # loss = F.l1_loss(predicted_noise, noise, reduction="mean")
-            return -loss.item()
-        except Exception as e:
-            print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
-            return -10000
+    @torch.no_grad()
+    def _reward_for_prompt(
+        self, clean_latents: torch.Tensor, adversarial_prompt: str, *, generator: Optional[torch.Generator] = None
+    ) -> float:
+        input_ids = self.tokenizer(
+            adversarial_prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(self.device)
+        encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0].to(dtype=self.compute_dtype)
 
+        T = int(self.train_scheduler.config.num_train_timesteps)
+        if isinstance(self.train_scheduler.config, Mapping):
+            pred_type = self.train_scheduler.config.get("prediction_type", "epsilon")
+        else:
+            pred_type = "epsilon"
 
-    def generate_image(self, prompt, height=512, width=512, num_inference_steps=100, guidance_scale=7.5):
-        input_ids = self.tokenizer(prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt", truncation=True).input_ids.to(self.device)
-        text_embeddings = self.text_encoder(input_ids=input_ids)[0]
+        losses = []
+        for _ in range(self.reward_num_timesteps):
+            t = torch.randint(low=0, high=T, size=(1,), device=self.device, generator=generator).long()
+            noise = _randn_like(clean_latents, generator=generator)
+            noisy_latents = self.train_scheduler.add_noise(clean_latents, noise, t)
+            predicted = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
 
-        uncond_input_ids = self.tokenizer([""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt").input_ids.to(self.device)
-        uncond_embeddings = self.text_encoder(input_ids=uncond_input_ids)[0]
+            if pred_type == "epsilon":
+                target = noise
+            elif pred_type in ("v_prediction", "v-prediction", "v"):
+                target = self.train_scheduler.get_velocity(clean_latents, noise, t)
+            else:
+                target = noise  # fallback
 
-        uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
-        text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
+            loss = F.mse_loss(predicted, target, reduction="mean")
+            losses.append(loss)
+
+        mean_loss = torch.stack(losses).mean()
+        return -float(mean_loss.item())
+
+    # --- generacja do wizualizacji ---
+
+    @torch.no_grad()
+    def generate_image(
+        self,
+        prompt: str,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 30,
+        guidance_scale: float = 7.5,
+    ) -> Image.Image:
+        input_ids = self.tokenizer(
+            prompt, padding="max_length", max_length=self.tokenizer.model_max_length, truncation=True, return_tensors="pt"
+        ).input_ids.to(self.device)
+        text_embeddings = self.text_encoder(input_ids=input_ids)[0].to(dtype=self.compute_dtype)
+
+        uncond_input_ids = self.tokenizer(
+            [""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt"
+        ).input_ids.to(self.device)
+        uncond_embeddings = self.text_encoder(input_ids=uncond_input_ids)[0].to(dtype=self.compute_dtype)
+
+        scheduler = copy.deepcopy(self.sample_scheduler)
+        scheduler.set_timesteps(num_inference_steps, device=self.device)
 
         gen = torch.Generator(device=self.device)
         gen.manual_seed(self.seed)
 
-        scheduler = copy.deepcopy(self.scheduler)
-        scheduler.set_timesteps(num_inference_steps)
-
-        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),  generator=gen, device=self.device, dtype=self.unet.dtype)
-        latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
+        latents = torch.randn(
+            (1, self.unet.config.in_channels, height // 8, width // 8),
+            generator=gen,
+            device=self.device,
+            dtype=self.compute_dtype,
+        )
+        latents = latents * scheduler.init_noise_sigma
 
         for t in scheduler.timesteps:
             latent_model_input = scheduler.scale_model_input(latents, timestep=t)
 
             noise_pred_uncond = self.unet(latent_model_input, t, encoder_hidden_states=uncond_embeddings).sample
             noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
-
             noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
+
             latents = scheduler.step(noise_pred, t, latents).prev_sample
 
-        latents = 1 / 0.18215 * latents
-        image = self.vae.decode(latents).sample
+        latents = latents / self.latent_scaling
+        image = self.vae.decode(latents.to(dtype=torch.float32)).sample  # decode w FP32
         image = (image / 2 + 0.5).clamp(0, 1)
-
         image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
-        image_pil = PIL.Image.fromarray(image_np)
-        return image_pil
+        return PIL.Image.fromarray(image_np)
 
+    # --- główne wywołanie ---
 
-    def __call__(self, completions, **kwargs):
-        image_paths = kwargs.get('target_img', [])
+    @torch.no_grad()
+    def __call__(self, completions: List[str], **kwargs) -> Tuple[List[float], Optional[List[Dict[str, Any]]]]:
+        image_paths: List[str] = kwargs.get("target_img", [])
+        step: int = int(kwargs.get("step", -1))
+        mode = kwargs.get("mode", False)
+        original_prompt: str = kwargs.get("original_prompt", "oopsie")
+
+        if len(image_paths) != len(completions):
+            print(f"[DenoisingReward] WARNING: len(image_paths)={len(image_paths)} != len(completions)={len(completions)}")
+
         batch_size = len(completions)
-        rewards = []
-        adversarial_prompts = []
-        images = None
+        rewards: List[float] = []
+        adversarial_prompts: List[str] = []
+        images: Optional[List[Dict[str, Any]]] = None
 
-        step = kwargs.get('step', -1)
-        mode = kwargs.get('mode', False)
-        original_prompt = kwargs.get('original_prompt', "oopsie")
-
-        t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()
+        # deterministyczny RNG per-step (możesz też dodać +i jeśli chcesz różne seedy w obrębie batcha)
+        gen = torch.Generator(device=self.device)
+        gen.manual_seed(self.seed + max(0, step))
 
         for i in range(batch_size):
             generated_text = completions[i]
-            img_path = image_paths[i]
+            img_path = image_paths[i] if i < len(image_paths) else None
+
+            # wydobycie promptu z <answer>...</answer> lub fallback na całą odpowiedź
             try:
-                match = re.search(r'<answer>(.*?)</answer>', generated_text, re.DOTALL)
-                if match:
-                    adversarial_prompt = match.group(1).strip()
-                else:
-                    print(f"[DenoisingReward] Warning: Could not find <answer> tag in completion")
-                    adversarial_prompt = generated_text.strip()
-                adversarial_prompts.append(adversarial_prompt)
+                match = re.search(r"<answer>(.*?)</answer>", generated_text, re.DOTALL)
+                adversarial_prompt = (match.group(1) if match else generated_text).strip()[:1024]
             except Exception as e:
-                print(f"[DenoisingReward] Error parsing messages for sample {i}: {e}")
-                adversarial_prompts.append(generated_text)
+                print(f"[DenoisingReward] Error parsing completion[{i}]: {e}")
+                adversarial_prompt = generated_text.strip()[:1024]
+
+            adversarial_prompts.append(adversarial_prompt)
+
+            # w razie braku ścieżki obrazu — bezpieczny fallback 0.0 (nie psuje skali GRPO)
+            if not img_path:
+                print(f"[DenoisingReward] Missing image path for sample {i}")
+                rewards.append(-1.0)
                 continue
 
             clean_latents = self._get_cached_image_latent(img_path)
-            reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt, t=t)
-            rewards.append(reward)
+            if clean_latents is None:
+                rewards.append(-1.0)
+                continue
 
-        if ((step+1) % 50 == 0 or mode=='eval') and adversarial_prompts:
+            # wyliczenie nagrody; gwarantujemy float
+            r = self._reward_for_prompt(clean_latents, adversarial_prompt, generator=gen)
+            rewards.append(float(r))
+
+        # UWAGA: brak batchowej normalizacji tutaj — GRPO zrobi własną normalizację
+
+        # Wizualizacja co 50 kroków lub w trybie eval
+        if ((step + 1) % 50 == 0 or mode == "eval") and adversarial_prompts:
             images = []
 
-            target_img_path = image_paths[0]
-            target_image = PIL.Image.open(target_img_path).convert("RGB")
-            images.append({"target": target_image})
+            # obraz referencyjny (target) do porównania
+            if image_paths:
+                try:
+                    target_img_path = image_paths[0]
+                    target_image = PIL.Image.open(target_img_path).convert("RGB")
+                    images.append({"target": target_image})
+                except Exception as e:
+                    print(f"[DenoisingReward] ERROR loading target image for viz: {e}")
 
-            print(f"[DenoisingReward] Step {step}: Generating {len(adversarial_prompts)} images for visualization...")
+            print(f"[DenoisingReward] Step {step}: generating {len(adversarial_prompts)} images for visualization")
 
-            with torch.no_grad():
-                for prompt in adversarial_prompts:
-                    sample_dict = {"prompt": prompt}
-                    image = self.generate_image(prompt=prompt)
-                    sample_dict["generated"] = image
-                    images.append(sample_dict)
+            # próbki dla poszczególnych promptów
+            for prompt in adversarial_prompts:
+                try:
+                    sample = {"prompt": prompt}
+                    img = self.generate_image(prompt=prompt, height=512, width=512)
+                    sample["generated"] = img
+                    images.append(sample)
+                except Exception as e:
+                    print(f"[DenoisingReward] ERROR generating sample for prompt: {e}")
 
-                sample_dict = {"original_prompt": original_prompt}
-                image = self.generate_image(prompt=original_prompt)
-                sample_dict["generated"] = image
-                images.append(sample_dict)
+            # dodatkowo obraz z oryginalnego promptu
+            try:
+                base_sample = {"original_prompt": original_prompt}
+                img = self.generate_image(prompt=original_prompt, height=512, width=512)
+                base_sample["generated"] = img
+                images.append(base_sample)
+            except Exception as e:
+                print(f"[DenoisingReward] ERROR generating original_prompt sample: {e}")
 
         return rewards, images
 
+
+
+# --- rejestracja ORMów ---
 orms = {
     'toolbench': ReactORM,
     'math': MathORM,
@@ -618,8 +782,3 @@ orms = {
     'soft_overlong': SoftOverlong,
     'denoising': DenoisingReward,
 }
-
-
-
-
-
