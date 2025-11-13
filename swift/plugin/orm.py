@@ -502,20 +502,20 @@ class DenoisingReward(ORM):
             print(f"[DenoisingReward] ERROR loading/processing image {image_path}: {e}")
             return None
 
-    def _get_reward_score(self,clean_latents, ap, t):
-        try:
-            input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
-            encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0]
-            noise = torch.randn_like(clean_latents)
-            noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
+    # def _get_reward_score(self,clean_latents, ap, t):
+    #     try:
+    #         input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
+    #         encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0]
+    #         noise = torch.randn_like(clean_latents)
+    #         noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
 
-            predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
-            loss_mse = F.mse_loss(predicted_noise, noise, reduction="mean")
-            loss_l1 = F.l1_loss(predicted_noise, noise, reduction="mean")
-            return - (0.8 * loss_mse.item() + 0.2 * loss_l1.item())
-        except Exception as e:
-            print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
-            return -10000
+    #         predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
+    #         loss_mse = F.mse_loss(predicted_noise, noise, reduction="mean")
+    #         loss_l1 = F.l1_loss(predicted_noise, noise, reduction="mean")
+    #         return - (0.8 * loss_mse.item() + 0.2 * loss_l1.item())
+    #     except Exception as e:
+    #         print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
+    #         return -10000
 
 
     def generate_image(self, prompt, height=512, width=512, num_inference_steps=100, guidance_scale=7.5):
@@ -566,26 +566,39 @@ class DenoisingReward(ORM):
         mode = kwargs.get('mode', False)
         original_prompt = kwargs.get('original_prompt', "oopsie")
 
-        t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()
-        for i in range(batch_size):
-            generated_text = completions[i]
-            img_path = image_paths[i]
-            try:
-                match = re.search(r'<answer>(.*?)</answer>', generated_text, re.DOTALL)
-                if match:
-                    adversarial_prompt = match.group(1).strip()
-                else:
-                    print(f"[DenoisingReward] Warning: Could not find <answer> tag in completion")
-                    adversarial_prompt = generated_text.strip()
-                adversarial_prompts.append(adversarial_prompt)
-            except Exception as e:
-                print(f"[DenoisingReward] Error parsing messages for sample {i}: {e}")
-                adversarial_prompts.append(generated_text)
-                continue
 
-            clean_latents = self._get_cached_image_latent(img_path)
-            reward = self._get_reward_score(clean_latents=clean_latents, ap = adversarial_prompt, t=t)
-            rewards.append(reward)
+        adversarial_prompts = []
+        for txt in completions:
+            match = re.search(r'<answer>(.*?)</answer>', txt, re.DOTALL)
+            adversarial_prompts.append(match.group(1).strip() if match else txt.strip())
+
+        target_img_path = image_paths[0]
+        with torch.no_grad():    
+            clean_latents = self._get_cached_image_latent(target_img_path)  
+            clean_latents = clean_latents.to(self.device, dtype=self.vae.dtype)
+            
+            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()        
+
+            noise = torch.randn_like(clean_latents)
+            noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
+            noisy_latents = noisy_latents.repeat(batch_size, 1, 1, 1)       
+
+            inputs = self.tokenizer(
+                adversarial_prompts,
+                padding="max_length",
+                max_length=self.tokenizer.model_max_length,
+                truncation=True,
+                return_tensors="pt"
+            ).to(self.device)
+
+            with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+                encoder_hidden_states = self.text_encoder(input_ids=inputs.input_ids)[0]
+                predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states).sample
+
+                loss_mse = F.mse_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
+                loss_l1 = F.l1_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
+                rewards = - (0.8 * loss_mse + 0.2 * loss_l1)
+            rewards = rewards.detach().cpu().tolist()
 
         if ((step+1) % 50 == 1 or mode=='eval') and adversarial_prompts:
             images = []
@@ -607,7 +620,6 @@ class DenoisingReward(ORM):
                 image = self.generate_image(prompt=original_prompt)
                 sample_dict["generated"] = image
                 images.append(sample_dict)
-
         return rewards, images
 
 orms = {
