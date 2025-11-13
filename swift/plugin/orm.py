@@ -590,7 +590,7 @@ class DenoisingReward(ORM):
                 return_tensors="pt"
             ).input_ids.to(self.device)
 
-            encoder_hidden_states = self.text_encoder(inputs_ids)[0]
+            encoder_hidden_states = self.text_encoder(inputs_ids)[0].to(self.device)
 
             with torch.autocast(device_type=self.device.type, dtype=torch.float16):
                 predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states).sample
