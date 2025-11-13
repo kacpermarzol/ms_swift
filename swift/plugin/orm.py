@@ -588,7 +588,7 @@ class DenoisingReward(ORM):
                 max_length=self.tokenizer.model_max_length,
                 truncation=True,
                 return_tensors="pt"
-            ).input_ids
+            ).input_ids.to(self.device)
 
             encoder_hidden_states = self.text_encoder(inputs_ids)[0]
             with torch.autocast(device_type=self.device.type, dtype=torch.float16):
