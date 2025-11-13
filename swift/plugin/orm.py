@@ -573,7 +573,7 @@ class DenoisingReward(ORM):
         with torch.no_grad():    
             clean_latents = self._get_cached_image_latent(target_img_path)
             clean_latents = clean_latents.repeat(batch_size, 1, 1, 1)
-            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,))
+            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,)).to(self.device)
 
             # noise = torch.randn_like(clean_latents)
             # noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
