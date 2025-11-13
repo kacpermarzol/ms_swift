@@ -558,14 +558,11 @@ class DenoisingReward(ORM):
     def __call__(self, completions, **kwargs):
         image_paths = kwargs.get('target_img', [])
         batch_size = len(completions)
-        rewards = []
-        adversarial_prompts = []
         images = None
 
         step = kwargs.get('step', -1)
         mode = kwargs.get('mode', False)
         original_prompt = kwargs.get('original_prompt', "oopsie")
-
 
         adversarial_prompts = []
         for txt in completions:
@@ -574,25 +571,27 @@ class DenoisingReward(ORM):
 
         target_img_path = image_paths[0]
         with torch.no_grad():    
-            clean_latents = self._get_cached_image_latent(target_img_path)  
-            clean_latents = clean_latents.to(self.device, dtype=self.vae.dtype)
-            
-            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,), device=self.device).long()        
+            clean_latents = self._get_cached_image_latent(target_img_path)
+            clean_latents = clean_latents.repeat(batch_size, 1, 1, 1)
+            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,))
+
+            # noise = torch.randn_like(clean_latents)
+            # noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
+            # noisy_latents = noisy_latents.repeat(batch_size, 1, 1, 1)  
 
             noise = torch.randn_like(clean_latents)
             noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
-            noisy_latents = noisy_latents.repeat(batch_size, 1, 1, 1)       
-
-            inputs = self.tokenizer(
+     
+            inputs_ids = self.tokenizer(
                 adversarial_prompts,
                 padding="max_length",
                 max_length=self.tokenizer.model_max_length,
                 truncation=True,
                 return_tensors="pt"
-            ).to(self.device)
+            ).input_ids
 
+            encoder_hidden_states = self.text_encoder(inputs_ids)[0]
             with torch.autocast(device_type=self.device.type, dtype=torch.float16):
-                encoder_hidden_states = self.text_encoder(input_ids=inputs.input_ids)[0]
                 predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states).sample
 
                 loss_mse = F.mse_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
