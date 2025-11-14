@@ -427,7 +427,7 @@ def preprocess_target_image(image, size = 512, interpolation=InterpolationMode.B
     return image
 
 class DenoisingReward(ORM):
-    def __init__(self, base_model_name: str, unlearned_unet_path: str, device: str = "cuda"):
+    def __init__(self, base_model_name: str, unlearned_unet_path: str, device: str = "cuda", num_train_epochs = 1001):
         self.device = torch.device(device)
         self.image_cache = {}
 
@@ -478,8 +478,10 @@ class DenoisingReward(ORM):
             # self.tokenizer.requires_grad_(False)
 
             self.seed = 1234
+            self.total_steps = num_train_epochs
 
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
+            print("AAAAAAAAAAA", self.total_steps)
         except Exception as e:
             print(f"[DenoisingReward] Error during initialization: {e}")
             raise
@@ -554,6 +556,25 @@ class DenoisingReward(ORM):
         image_pil = PIL.Image.fromarray(image_np)
         return image_pil
 
+    def sample_timesteps(self, global_step):
+        num_steps = self.scheduler.config.num_train_timesteps
+
+        progress = global_step / self.total_steps
+        progress = min(max(progress, 0.0), 1.0)
+
+        max_t = int((0.05 + 0.95 * progress) * num_steps)
+        max_t = max(1, max_t)
+
+        u = torch.rand((1,), device=self.device)
+        
+        start_exp = 0.2
+        end_exp = 1.0  
+        exponent = start_exp + (end_exp - start_exp) * progress
+        biased = u ** exponent
+        t = (biased * max_t).long()
+        return t
+
+
 
     def __call__(self, completions, **kwargs):
         image_paths = kwargs.get('target_img', [])
@@ -571,10 +592,13 @@ class DenoisingReward(ORM):
 
         target_img_path = image_paths[0]
         with torch.no_grad():    
-            clean_latents = self._get_cached_image_latent(target_img_path)            
-            t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,)).to(self.device)
-            noise = torch.randn_like(clean_latents)
+            clean_latents = self._get_cached_image_latent(target_img_path)    
 
+            t = self.sample_timesteps(step)
+            print("TTTTTTTTTT", t)
+
+            # t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,)).to(self.device)
+            noise = torch.randn_like(clean_latents)
             noisy_latents = self.scheduler.add_noise(clean_latents, noise, t).expand(batch_size, -1, -1, -1)
             noise = noise.expand(batch_size, -1, -1, -1)
      
@@ -595,7 +619,7 @@ class DenoisingReward(ORM):
                 rewards = - (0.8 * loss_mse + 0.2 * loss_l1)
             rewards = rewards.detach().cpu().tolist()
 
-        if ((step+1) % 50 == 0 or mode=='eval') and adversarial_prompts:
+        if ((step+1) % 100 == 0 or mode=='eval') and adversarial_prompts:
             images = []
 
             target_img_path = image_paths[0]
