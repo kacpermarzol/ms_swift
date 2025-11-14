@@ -481,7 +481,6 @@ class DenoisingReward(ORM):
             self.total_steps = num_train_epochs
 
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
-            print("AAAAAAAAAAA", self.total_steps)
         except Exception as e:
             print(f"[DenoisingReward] Error during initialization: {e}")
             raise
@@ -595,7 +594,6 @@ class DenoisingReward(ORM):
             clean_latents = self._get_cached_image_latent(target_img_path)    
 
             t = self.sample_timesteps(step)
-            print("TTTTTTTTTT", t)
 
             # t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,)).to(self.device)
             noise = torch.randn_like(clean_latents)
