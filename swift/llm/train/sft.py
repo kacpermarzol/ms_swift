@@ -250,7 +250,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
 
     def train(self, trainer):
         logging_path = os.path.join(trainer.args.output_dir, 'logging.jsonl')
-        logger.info(f'The logging file will be saved in: {logging_path}')
+        # logger.info(f'The logging file will be saved in: {logging_path}')
         try:
             trainer.train(trainer.args.resume_from_checkpoint)
         finally:
@@ -295,7 +295,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         else:
             length = dataset.packed_length
         _, stat_str = stat_array(length)
-        logger.info(f'Dataset Token Length: {stat_str}')
+        # logger.info(f'Dataset Token Length: {stat_str}')
         return stat_str
 
     def _show_dataset(self, train_dataset, val_dataset):

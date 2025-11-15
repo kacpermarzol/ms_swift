@@ -277,7 +277,7 @@ class SwiftMixin:
                     _unwrap_model.save_pretrained(
                         output_dir, state_dict=state_dict, safe_serialization=save_safetensors)
             else:
-                logger.info('Trainer.model is not a `PreTrainedModel`, only saving its state dict.')
+                # logger.info('Trainer.model is not a `PreTrainedModel`, only saving its state dict.')
                 if use_flash_ckpt:
                     self.flash_checkpointer.ckpt_agent.save(state_dict, os.path.join(output_dir, 'pytorch_model.bin'))
                 else:
@@ -481,7 +481,7 @@ class SwiftMixin:
             result = self._save_flash_checkpoint(*args, **kwargs)
         else:
             result = super()._save_checkpoint(*args, **kwargs)
-        logger.info(f'Saving model checkpoint to {self.state.last_model_checkpoint}')
+        # logger.info(f'Saving model checkpoint to {self.state.last_model_checkpoint}')
         return result
 
     def _save_flash_checkpoint(self, model, trial, metrics=None):
@@ -790,7 +790,7 @@ class SwiftMixin:
 
             models = list(set(self.accelerator.unwrap_model(model) for model in models))  # Deduplicate
             self.template.register_post_encode_hook(models)
-            logger.info(f'Successfully registered post_encode hook: {[model.__class__.__name__ for model in models]}.')
+            # logger.info(f'Successfully registered post_encode hook: {[model.__class__.__name__ for model in models]}.')
         self._save_initial_model(self.args.output_dir)
 
         # gradient_checkpointing

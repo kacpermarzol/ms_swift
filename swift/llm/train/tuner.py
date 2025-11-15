@@ -167,7 +167,7 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
         if args.use_swift_lora:
             lora_config = LoRAConfig(lora_dtype=args.lora_dtype, **lora_kwargs)
             model = Swift.prepare_model(model, lora_config)
-            logger.info(f'lora_config: {lora_config}')
+            # logger.info(f'lora_config: {lora_config}')
         elif args.tuner_backend == 'peft':
             if task_type == 'EMBEDDING':
                 task_type = None
@@ -202,7 +202,7 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
                 )
             else:
                 model = Swift.prepare_model(model, lora_config)
-            logger.info(f'lora_config: {lora_config}')
+            # logger.info(f'lora_config: {lora_config}')
         elif args.tuner_backend == 'unsloth':
             if args.resume_from_checkpoint is None:
                 if args.model_meta.is_multimodal:
@@ -217,7 +217,7 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
                     max_seq_length=args.max_length or 2048,  # 2048 is the default value of unsloth
                     **lora_kwargs,
                 )
-                logger.info(f'unsloth_config: {lora_kwargs}')
+                # logger.info(f'unsloth_config: {lora_kwargs}')
         if args.train_type == 'longlora':
             assert LongLoRAModelType.LLAMA in args.model_type
             assert version.parse(transformers.__version__) >= version.parse('4.39.3')
@@ -242,14 +242,14 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
             total_step=calculate_max_steps(args.training_args, train_dataset),
         )
         model = Swift.prepare_model(model, adalora_config)
-        logger.info(f'adalora_config: {adalora_config}')
+        # logger.info(f'adalora_config: {adalora_config}')
     elif args.train_type == 'llamapro':
         llamapro_config = LLaMAProConfig(
             model_type=model.model_meta.model_arch.arch_name,
             num_new_blocks=args.llamapro_num_new_blocks,
             num_groups=args.llamapro_num_groups)
         model = Swift.prepare_model(model, llamapro_config)
-        logger.info(f'llamapro_config: {llamapro_config}')
+        # logger.info(f'llamapro_config: {llamapro_config}')
     elif args.train_type == 'adapter':
         model_arch = model.model_meta.model_arch
         mlp_key = model_arch.mlp
@@ -261,7 +261,7 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
             adapter_length=args.adapter_length,
             act_layer=args.adapter_act)
         model = Swift.prepare_model(model, adapter_config)
-        logger.info(f'adapter_config: {adapter_config}')
+        # logger.info(f'adapter_config: {adapter_config}')
     elif args.train_type == 'vera':
         vera_config = VeraConfig(
             r=args.vera_rank,
@@ -273,7 +273,7 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
         )
         vera_config = get_vera_target_modules(model, vera_config)
         model = Swift.prepare_model(model, vera_config)
-        logger.info(f'vera_config: {vera_config}')
+        # logger.info(f'vera_config: {vera_config}')
     elif args.train_type == 'boft':
         boft_config = BOFTConfig(
             boft_block_size=args.boft_block_size,
@@ -284,7 +284,7 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
             modules_to_save=args.modules_to_save,
         )
         model = Swift.prepare_model(model, boft_config)
-        logger.info(f'boft_config: {boft_config}')
+        # logger.info(f'boft_config: {boft_config}')
     elif args.train_type == 'fourierft':
         from peft import FourierFTConfig
         fourier_config = FourierFTConfig(
@@ -294,7 +294,7 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
             scaling=args.fourier_scaling,
         )
         model = Swift.prepare_model(model, fourier_config)
-        logger.info(f'fourier_config: {fourier_config}')
+        # logger.info(f'fourier_config: {fourier_config}')
     elif args.train_type == 'reft':
         reft_config = ReftConfig(
             model_type=model.model_meta.model_arch,
@@ -304,7 +304,7 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
             intervention_type=args.reft_intervention_type,
             args=args.reft_args,
         )
-        logger.info(f'reft config: {reft_config}')
+        # logger.info(f'reft config: {reft_config}')
         model = Swift.prepare_model(model, {'reft': reft_config})
     elif args.train_type == 'bone':
         # Version loosing
@@ -314,7 +314,7 @@ def prepare_adapter(args: TrainArguments, model, *, template=None, train_dataset
             r=args.reft_rank,
             init_weights=args.init_weights,
         )
-        logger.info(f'bone config: {bone_config}')
+        # logger.info(f'bone config: {bone_config}')
         model = Swift.prepare_model(model, bone_config)
     else:
         raise ValueError(f'Unknown train_type: {args.train_type}')

@@ -428,9 +428,6 @@ class DenoisingReward(ORM):
         self.device = torch.device(device)
         self.image_cache = {}
 
-        print(f"[DenoisingReward] Initializing with base model: {base_model_name}")
-        print(f"[DenoisingReward] Loading unlearned UNet from: {unlearned_unet_path}")
-
         try:
             dtype = torch.float16
 
