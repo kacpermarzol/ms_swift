@@ -26,7 +26,7 @@ def run_client(host: str = '127.0.0.1', port: int = 8000):
         base_url=f'http://{host}:{port}/v1',
     )
     model = client.models.list().data[0].id
-    print(f'model: {model}')
+    # print(f'model: {model}')
 
     messages = [{
         'role':

@@ -33,7 +33,7 @@ class SwiftInfer(SwiftPipeline):
             model, self.template = prepare_model_template(args)
             self.infer_engine = PtEngine.from_model_template(model, self.template, max_batch_size=args.max_batch_size)
             self.infer_engine.reranker_use_activation = args.reranker_use_activation
-            logger.info(f'model: {self.infer_engine.model}')
+            # logger.info(f'model: {self.infer_engine.model}')
         else:
             self.template = args.get_template(None)
             self.infer_engine = self.get_infer_engine(args, self.template)
