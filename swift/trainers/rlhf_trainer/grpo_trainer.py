@@ -171,7 +171,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         #   - Completions are generated for each batch without buffering or reuse
         # Returns a single local batch in both cases.
 
-        print("KM DEBUG _prepare_inputs")
         mode = 'train' if self.model.training else 'eval'
         if mode == 'train':
             num_rollout_samples = self.args.steps_per_generation * self.template.sequence_parallel_size

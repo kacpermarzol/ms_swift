@@ -56,6 +56,7 @@ class RLHFTrainerMixin:
         return {}
 
     def _prepare_inputs(self, inputs):
+        print("KM DEBUG: _prepare_inputs called")  # KM DEBUG
         inputs = super()._prepare_inputs(inputs)
         if self.template.sequence_parallel_size > 1:
             from swift.trainers.sequence_parallel import sequence_parallel
