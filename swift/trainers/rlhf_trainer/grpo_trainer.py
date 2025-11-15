@@ -1525,7 +1525,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 print("Waiting for eval rollout to complete...")
         result = super().training_step(model, inputs, num_items_in_batch)
         end = time.time()
-        print(f"Single loss computation time: {end - start} seconds")
+        # print(f"Single loss computation time: {end - start} seconds")
         return result
 
     def old_policy(self):
