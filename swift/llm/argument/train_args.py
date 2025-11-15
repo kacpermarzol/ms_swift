@@ -37,7 +37,7 @@ class Seq2SeqTrainingOverrideArguments(TrainArgumentsMixin, Seq2SeqTrainingArgum
             self.eval_steps = None
             if self.split_dataset_ratio > 0:
                 self.split_dataset_ratio = 0.
-                logger.info(f'Setting args.split_dataset_ratio: {self.split_dataset_ratio}')
+                # logger.info(f'Setting args.split_dataset_ratio: {self.split_dataset_ratio}')
         elif self.eval_strategy == 'steps' and self.eval_steps is None:
             self.eval_steps = self.save_steps
         self.evaluation_strategy = self.eval_strategy
@@ -208,7 +208,7 @@ class TrainArguments(SwanlabArguments, TunerArguments, BaseArguments, Seq2SeqTra
                     'To use `deepspeed_autotp_size`, you need to additionally set the `--deepspeed` argument.')
                 self.deepspeed['tensor_parallel'] = {'autotp_size': self.deepspeed_autotp_size}
                 self.deepspeed['zero_optimization']['gather_16bit_weights_on_model_save'] = True
-            logger.info(f'Using deepspeed: {self.deepspeed}')
+            # logger.info(f'Using deepspeed: {self.deepspeed}')
 
     def _handle_pai_compat(self) -> None:
         if not is_pai_training_job():
@@ -218,7 +218,7 @@ class TrainArguments(SwanlabArguments, TunerArguments, BaseArguments, Seq2SeqTra
         pai_tensorboard_dir = get_pai_tensorboard_dir()
         if self.logging_dir is None and pai_tensorboard_dir is not None:
             self.logging_dir = pai_tensorboard_dir
-            logger.info(f'Setting args.logging_dir: {self.logging_dir}')
+            # logger.info(f'Setting args.logging_dir: {self.logging_dir}')
         self.add_version = False
         logger.info(f'Setting args.add_version: {self.add_version}')
 

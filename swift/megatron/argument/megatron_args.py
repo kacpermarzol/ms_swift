@@ -469,7 +469,7 @@ class MegatronArguments(ExtraMegatronArguments):
             self.no_rope_fusion = True
         else:
             self.no_rope_fusion = False
-        logger.info(f'Setting args.no_rope_fusion: {self.no_rope_fusion}.')
+        # logger.info(f'Setting args.no_rope_fusion: {self.no_rope_fusion}.')
 
     def _args_to_argv(self) -> Tuple[List[Any], Dict[str, Any]]:
         new_args = []

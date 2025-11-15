@@ -105,7 +105,7 @@ class TrainArgumentsMixin:
         if self.gradient_accumulation_steps is None:
             world_size = get_dist_setting()[2]
             self.gradient_accumulation_steps = max(1, math.ceil(16 / self.per_device_train_batch_size / world_size))
-            logger.info(f'Setting args.gradient_accumulation_steps: {self.gradient_accumulation_steps}')
+            # logger.info(f'Setting args.gradient_accumulation_steps: {self.gradient_accumulation_steps}')
         if self.lr_scheduler_kwargs:
             self.lr_scheduler_kwargs = json_parse_to_dict(self.lr_scheduler_kwargs)
         if self.vit_gradient_checkpointing is None:
@@ -118,7 +118,7 @@ class TrainArgumentsMixin:
                 self.dataloader_num_workers = 0
             else:
                 self.dataloader_num_workers = 1
-            logger.info(f'Setting args.dataloader_num_workers: {self.dataloader_num_workers}')
+            # logger.info(f'Setting args.dataloader_num_workers: {self.dataloader_num_workers}')
         if self.dataloader_prefetch_factor is None and self.dataloader_num_workers > 0:
             self.dataloader_prefetch_factor = 10
         if self.eval_use_evalscope:

@@ -132,7 +132,7 @@ class InferArguments(MergeArguments, LmdeployArguments, SglangArguments, VllmArg
             self.stream = self.eval_human
         if self.stream and self.num_beams != 1:
             self.stream = False
-            logger.info('Setting args.stream: False')
+            # logger.info('Setting args.stream: False')
 
     def _init_ddp(self):
         if not is_dist():
@@ -157,4 +157,4 @@ class InferArguments(MergeArguments, LmdeployArguments, SglangArguments, VllmArg
         else:
             eval_human = False
         self.eval_human = eval_human
-        logger.info(f'Setting args.eval_human: {self.eval_human}')
+        # logger.info(f'Setting args.eval_human: {self.eval_human}')

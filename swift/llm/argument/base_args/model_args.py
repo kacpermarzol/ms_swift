@@ -120,7 +120,7 @@ class ModelArguments:
         if 'factor' not in rope_scaling and self.max_model_len is None:
             # fix megatron qwen2_5_vl
             self.rope_scaling = rope_scaling
-            logger.info(f'Setting args.rope_scaling: {rope_scaling}')
+            # logger.info(f'Setting args.rope_scaling: {rope_scaling}')
             return
 
         # get origin_max_model_len
@@ -147,8 +147,8 @@ class ModelArguments:
                            f'{origin_max_model_len}) should be bigger than max_model_len '
                            f'from command line ({self.max_model_len})')
         self.rope_scaling = rope_scaling
-        logger.info(f'Setting args.rope_scaling: {rope_scaling}')
-        logger.info(f'Setting args.max_model_len: {self.max_model_len}')
+        # logger.info(f'Setting args.rope_scaling: {rope_scaling}')
+        # logger.info(f'Setting args.max_model_len: {self.max_model_len}')
 
     def _init_model_info(self) -> torch.dtype:
         self.model_info, self.model_meta = get_model_info_meta(**self.get_model_kwargs())
