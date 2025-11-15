@@ -21,7 +21,7 @@ class SwiftPipeline(ABC, ProcessorMixin):
         if hasattr(args, 'seed'):
             seed = args.seed + max(getattr(args, 'rank', -1), 0)
             seed_everything(seed)
-        logger.info(f'args: {args}')
+        # logger.info(f'args: {args}')
         self._compat_dsw_gradio(args)
 
     def _parse_args(self, args: Optional[Union[List[str], args_class]] = None) -> args_class:
