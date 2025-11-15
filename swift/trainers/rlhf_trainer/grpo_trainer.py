@@ -1522,6 +1522,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             # Wait for the eval rollout to complete
             while not self.is_async_generate_eval_rollout_done():
                 time.sleep(0.1)
+                print("Waiting for eval rollout to complete...")
         result = super().training_step(model, inputs, num_items_in_batch)
         end = time.time()
         print(f"Single loss computation time: {end - start} seconds")
