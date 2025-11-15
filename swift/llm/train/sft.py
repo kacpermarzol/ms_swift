@@ -58,12 +58,12 @@ class SwiftSft(SwiftPipeline, TunerMixin):
                 args.sequence_parallel_size, model=self.model, tokenizer=self.processor, padding_free=args.padding_free)
         if self.model is None:
             return
-        if hasattr(self.model, 'hf_device_map'):
+        
+        # if hasattr(self.model, 'hf_device_map'):
             # logger.info(f'model.hf_device_map: {self.model.hf_device_map}')
 
         # logger.info(f'model_info: {
         # self.model.model_info}')
-
         self._prepare_generation_config()
 
     @RayHelper.function(group='default')
