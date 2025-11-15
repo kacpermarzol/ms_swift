@@ -564,31 +564,31 @@ class DenoisingReward(ORM):
             adversarial_prompts.append(match.group(1).strip() if match else txt.strip())
 
         target_img_path = image_paths[0]
-        with torch.no_grad(), torch.autocast(device_type=self.device.type, dtype=torch.float16):
-            clean_latents = self._get_cached_image_latent(target_img_path)    
-            t = self.sample_timesteps(torch.tensor(step, device=self.device))
+        # with torch.no_grad(), torch.autocast(device_type=self.device.type, dtype=torch.float16):
+        clean_latents = self._get_cached_image_latent(target_img_path)    
+        t = self.sample_timesteps(torch.tensor(step, device=self.device))
 
-            noise = torch.randn_like(clean_latents)
-            alpha = self.alphas_cumprod[t].view(1,1,1,1)
-            noisy_latents = alpha.sqrt() * clean_latents + (1 - alpha).sqrt() * noise
+        noise = torch.randn_like(clean_latents)
+        alpha = self.alphas_cumprod[t].view(1,1,1,1)
+        noisy_latents = alpha.sqrt() * clean_latents + (1 - alpha).sqrt() * noise
 
-            noisy_latents = noisy_latents.expand(batch_size, -1, -1, -1)
-            noise = noise.expand(batch_size, -1, -1, -1)
+        noisy_latents = noisy_latents.expand(batch_size, -1, -1, -1)
+        noise = noise.expand(batch_size, -1, -1, -1)
 
-            inputs_ids = self.tokenizer(
-                adversarial_prompts,
-                padding="max_length",
-                max_length=self.tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt"
-            ).input_ids.to(self.device)
+        inputs_ids = self.tokenizer(
+            adversarial_prompts,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt"
+        ).input_ids.to(self.device)
 
-            encoder_hidden_states = self.text_encoder(inputs_ids)[0].to(dtype=self.unet.dtype)
-            predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states).sample
-            loss_mse = F.mse_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
-            loss_l1 = F.l1_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
-            rewards = - (0.8 * loss_mse + 0.2 * loss_l1)
-            rewards = rewards.detach().cpu().tolist()
+        encoder_hidden_states = self.text_encoder(inputs_ids)[0].to(dtype=self.unet.dtype)
+        predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states).sample
+        loss_mse = F.mse_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
+        loss_l1 = F.l1_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
+        rewards = - (0.8 * loss_mse + 0.2 * loss_l1)
+        rewards = rewards.detach().cpu().tolist()
 
         if ((step+1) % 100 == 0 or mode=='eval') and adversarial_prompts:
             images = []

@@ -340,15 +340,15 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 else:
                     # Repeat all input columns (but "messages" and "completion") to match the number of generations
                     reward_kwargs.update(RowPreprocessor.rows_to_batched(inputs))
-                    reward_kwargs.update({'step': self._step})
-                    mode = 'train' if self.model.training else 'eval'
-                    reward_kwargs.update({'mode': mode})
-                    original_prompt = inputs[0]['messages'][1]['content']
-                    reward_kwargs.update({'original_prompt': original_prompt})
-
+                  
                     images = None
 
                     if reward_func_name == "DenoisingReward":
+                        reward_kwargs.update({'step': self._step})
+                        mode = 'train' if self.model.training else 'eval'
+                        reward_kwargs.update({'mode': mode})
+                        original_prompt = inputs[0]['messages'][1]['content']
+                        reward_kwargs.update({'original_prompt': original_prompt})
                         output_reward_func, images = reward_func(completions, **reward_kwargs)
                     else:
                         output_reward_func = reward_func(completions, **reward_kwargs)
