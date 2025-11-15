@@ -305,6 +305,7 @@ class Seq2SeqTrainer(SwiftMixin, DataLoaderMixin, HfSeq2SeqTrainer):
         return inputs
 
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
+        print("KM DEBUG")
         labels = None
         compute_loss_func: Callable = inputs.pop('compute_loss_func', None)
         loss_scale = inputs.pop('loss_scale', None)
