@@ -46,7 +46,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         self.model.origin_generation_config = self.model.generation_config
         self.model.generation_config = prepare_generation_config(self.model.generation_config,
                                                                  args.get_request_config(), self.tokenizer)
-        logger.info(f'model.generation_config: {self.model.generation_config}')
+        # logger.info(f'model.generation_config: {self.model.generation_config}')
 
     @RayHelper.function(group='default')
     def _prepare_model_tokenizer(self, **kwargs):
@@ -59,9 +59,10 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         if self.model is None:
             return
         if hasattr(self.model, 'hf_device_map'):
-            logger.info(f'model.hf_device_map: {self.model.hf_device_map}')
+            # logger.info(f'model.hf_device_map: {self.model.hf_device_map}')
 
-        # logger.info(f'model_info: {self.model.model_info}')
+        # logger.info(f'model_info: {
+        # self.model.model_info}')
 
         self._prepare_generation_config()
 
@@ -105,7 +106,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
             os.makedirs(output_dir, exist_ok=True)
             val_dataset_path = os.path.join(output_dir, 'val_dataset.jsonl')
             append_to_jsonl(val_dataset_path, val_dataset.to_list())
-            logger.info(f'The split dataset from the training set will be saved at: {val_dataset_path}.')
+            # logger.info(f'The split dataset from the training set will be saved at: {val_dataset_path}.')
 
     def _get_cached_dataset(self):
         args = self.args
@@ -222,8 +223,8 @@ class SwiftSft(SwiftPipeline, TunerMixin):
                 state.best_model_checkpoint = best_checkpoint
         else:
             state.last_model_checkpoint = None
-        logger.info(f'last_model_checkpoint: {state.last_model_checkpoint}')
-        logger.info(f'best_model_checkpoint: {state.best_model_checkpoint}')
+        # logger.info(f'last_model_checkpoint: {state.last_model_checkpoint}')
+        # logger.info(f'best_model_checkpoint: {state.best_model_checkpoint}')
 
         # Visualization
         if is_master():
