@@ -328,7 +328,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         rewards_per_func = torch.zeros((len(inputs), len(self.reward_funcs)), device=device)
         completions = [inp['messages'][-1]['content'] for inp in inputs]
         for i, (reward_func, reward_model_plugin, reward_func_name) in enumerate(zip(self.reward_funcs, self.reward_model_plugins, self.reward_func_names)):
-            start_time = time.time()
             with patch_profiling_context(self, reward_func_name):
                 # reward model
                 reward_kwargs = {'trainer_state': self.state}
@@ -379,9 +378,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                     wandb.log({"No attack": wandb.Image(img_dict["generated"], caption=img_dict["original_prompt"])})
                                 else:
                                     wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
-                end_time = time.time()
-                print(f'Reward function "{reward_func_name}" computed in {end_time - start_time:.2f} seconds.')
-                
                 rewards_per_func[:, i] = output_reward_func
 
         if torch.isnan(rewards_per_func).all(dim=1).any():
@@ -937,6 +933,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         return loss
 
     def _compute_loss_and_metrics(self, model, inputs):
+        start_time = time.time()
         """Core loss computation without metrics recording."""
         mode = 'train' if self.model.training else 'eval'
 
@@ -1111,6 +1108,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         if mode == 'train' and self.chord_sft_iterator is not None:
             loss = compute_chord_loss(self, grpo_loss=loss)
 
+        end_time = time.time()
+        print(f'Loss computation completed in {end_time - start_time:.2f} seconds.')
         return loss, metrics_data
 
     def _update_metrics(self, metrics_data):
