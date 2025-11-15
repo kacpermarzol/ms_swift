@@ -1,9 +1,6 @@
 import os
 import re
 from typing import TYPE_CHECKING, Dict, List, Union
-
-import wandb
-
 import torch
 import PIL.Image
 import torch.nn.functional as F
@@ -454,7 +451,7 @@ class DenoisingReward(ORM):
                 num_train_timesteps=1000
             )
 
-            self.alphas_cumprod = self.scheduler.alphas_cumprod.to(self.device)
+            self.alphas_cumprod = self.scheduler.alphas_cumprod.to(device=self.device, dtype=self.unet.dtype)
 
             state_dict = torch.load(unlearned_unet_path, map_location='cpu')
 
@@ -478,7 +475,17 @@ class DenoisingReward(ORM):
             # self.tokenizer.requires_grad_(False)
 
             self.seed = 1234
+
+            # Scheduler parameters for timestep sampling
             self.total_steps = num_train_epochs
+            self.num_steps = self.scheduler.config.num_train_timesteps
+            self.start_exp = 0.2
+            self.end_exp = 1.0  
+
+            # Image generation parameters
+            uncond_input_ids = self.tokenizer([""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt").input_ids.to(self.device)
+            self.uncond_embeddings = self.text_encoder(input_ids=uncond_input_ids)[0]
+
 
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
         except Exception as e:
@@ -503,31 +510,13 @@ class DenoisingReward(ORM):
             print(f"[DenoisingReward] ERROR loading/processing image {image_path}: {e}")
             return None
 
-    # def _get_reward_score(self,clean_latents, ap, t):
-    #     try:
-    #         input_ids = self.tokenizer(ap, padding="max_length", max_length=self.tokenizer.model_max_length,truncation=True, return_tensors="pt").input_ids.to(self.device)
-    #         encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0]
-    #         noise = torch.randn_like(clean_latents)
-    #         noisy_latents = self.scheduler.add_noise(clean_latents, noise, t)
-
-    #         predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
-    #         loss_mse = F.mse_loss(predicted_noise, noise, reduction="mean")
-    #         loss_l1 = F.l1_loss(predicted_noise, noise, reduction="mean")
-    #         return - (0.8 * loss_mse.item() + 0.2 * loss_l1.item())
-    #     except Exception as e:
-    #         print(f"[DenoisingReward] Error in _get_reward_score for prompt '{ap[:50]}...': {e}")
-    #         return -10000
-
-
     def generate_image(self, prompt, height=512, width=512, num_inference_steps=100, guidance_scale=7.5):
         input_ids = self.tokenizer(prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt", truncation=True).input_ids.to(self.device)
         text_embeddings = self.text_encoder(input_ids=input_ids)[0]
+        
+        uncond_embeddings = self.uncond_embeddings
 
-        uncond_input_ids = self.tokenizer([""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt").input_ids.to(self.device)
-        uncond_embeddings = self.text_encoder(input_ids=uncond_input_ids)[0]
-
-        uncond_embeddings = uncond_embeddings.to(dtype=self.unet.dtype)
-        text_embeddings = text_embeddings.to(dtype=self.unet.dtype)
+        cond_embeds = torch.cat([uncond_embeddings, text_embeddings], dim=0).to(self.unet.dtype)
 
         scheduler = copy.deepcopy(self.scheduler)
         scheduler.set_timesteps(num_inference_steps)
@@ -538,41 +527,29 @@ class DenoisingReward(ORM):
         latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),  generator=gen, device=self.device, dtype=self.unet.dtype)
         latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
 
-        for t in scheduler.timesteps:
-            latent_model_input = scheduler.scale_model_input(latents, timestep=t)
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+            for t in scheduler.timesteps:
+                latent_in = latents.expand(2, -1, -1, -1)
+                latent_in = scheduler.scale_model_input(latent_in, t)
+                noise_pred = self.unet(latent_in, t, cond_embeds).sample
+                noise_uncond, noise_text = noise_pred.chunk(2)
+                noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
+                latents = scheduler.step(noise_pred, t, latents).prev_sample
 
-            noise_pred_uncond = self.unet(latent_model_input, t, encoder_hidden_states=uncond_embeddings).sample
-            noise_pred_text = self.unet(latent_model_input, t, encoder_hidden_states=text_embeddings).sample
-
-            noise_pred = noise_pred_uncond + guidance_scale * (noise_pred_text - noise_pred_uncond)
-            latents = scheduler.step(noise_pred, t, latents).prev_sample
-
-        latents = 1 / 0.18215 * latents
-        image = self.vae.decode(latents).sample
+        latents = latents / 0.18215
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+            image = self.vae.decode(latents).sample
+        
         image = (image / 2 + 0.5).clamp(0, 1)
-
-        image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
-        image_pil = PIL.Image.fromarray(image_np)
-        return image_pil
+        image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
+        return PIL.Image.fromarray(image_np)
 
     def sample_timesteps(self, global_step):
-        num_steps = self.scheduler.config.num_train_timesteps
-
-        progress = global_step / self.total_steps
-        progress = min(max(progress, 0.0), 1.0)
-
-        max_t = int((0.05 + 0.95 * progress) * num_steps)
-        max_t = max(1, max_t)
-
-        u = torch.rand((1,), device=self.device)
-        
-        start_exp = 0.2
-        end_exp = 1.0  
-        exponent = start_exp + (end_exp - start_exp) * progress
-        biased = u ** exponent
-        t = (biased * max_t).long()
-        return t
-
+        progress = (global_step / self.total_steps).clamp(0.0, 1.0)
+        exponent = self.start_exp + (self.end_exp - self.start_exp) * progress
+        max_t = ((0.05 + 0.95 * progress) * self.num_steps).clamp(min=1).long()
+        u = torch.rand(1, device=self.device)
+        return (u.pow(exponent) * max_t).long()
 
 
     def __call__(self, completions, **kwargs):
@@ -590,16 +567,17 @@ class DenoisingReward(ORM):
             adversarial_prompts.append(match.group(1).strip() if match else txt.strip())
 
         target_img_path = image_paths[0]
-        with torch.no_grad():    
+        with torch.no_grad(), torch.autocast(device_type=self.device.type, dtype=torch.float16):
             clean_latents = self._get_cached_image_latent(target_img_path)    
+            t = self.sample_timesteps(torch.tensor(step, device=self.device))
 
-            t = self.sample_timesteps(step)
-
-            # t = torch.randint(0, self.scheduler.config.num_train_timesteps, (1,)).to(self.device)
             noise = torch.randn_like(clean_latents)
-            noisy_latents = self.scheduler.add_noise(clean_latents, noise, t).expand(batch_size, -1, -1, -1)
+            alpha = self.alphas_cumprod[t].view(1,1,1,1)
+            noisy_latents = alpha.sqrt() * clean_latents + (1 - alpha).sqrt() * noise
+
+            noisy_latents = noisy_latents.expand(batch_size, -1, -1, -1)
             noise = noise.expand(batch_size, -1, -1, -1)
-     
+
             inputs_ids = self.tokenizer(
                 adversarial_prompts,
                 padding="max_length",
@@ -608,19 +586,15 @@ class DenoisingReward(ORM):
                 return_tensors="pt"
             ).input_ids.to(self.device)
 
-            encoder_hidden_states = self.text_encoder(inputs_ids)[0]
-
-            with torch.autocast(device_type=self.device.type, dtype=torch.float16):
-                predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states).sample
-                loss_mse = F.mse_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
-                loss_l1 = F.l1_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
-                rewards = - (0.8 * loss_mse + 0.2 * loss_l1)
+            encoder_hidden_states = self.text_encoder(inputs_ids)[0].to(dtype=self.unet.dtype)
+            predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states).sample
+            loss_mse = F.mse_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
+            loss_l1 = F.l1_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
+            rewards = - (0.8 * loss_mse + 0.2 * loss_l1)
             rewards = rewards.detach().cpu().tolist()
 
         if ((step+1) % 100 == 0 or mode=='eval') and adversarial_prompts:
             images = []
-
-            target_img_path = image_paths[0]
             target_image = PIL.Image.open(target_img_path).convert("RGB")
             images.append({"target": target_image})
 
@@ -632,7 +606,6 @@ class DenoisingReward(ORM):
                     image = self.generate_image(prompt=prompt)
                     sample_dict["generated"] = image
                     images.append(sample_dict)
-
                 sample_dict = {"original_prompt": original_prompt}
                 image = self.generate_image(prompt=original_prompt)
                 sample_dict["generated"] = image
