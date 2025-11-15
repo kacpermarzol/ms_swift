@@ -61,7 +61,7 @@ class SwiftSft(SwiftPipeline, TunerMixin):
         if hasattr(self.model, 'hf_device_map'):
             logger.info(f'model.hf_device_map: {self.model.hf_device_map}')
 
-        logger.info(f'model_info: {self.model.model_info}')
+        # logger.info(f'model_info: {self.model.model_info}')
 
         self._prepare_generation_config()
 
