@@ -550,7 +550,7 @@ class DenoisingReward(ORM):
 
 
     def __call__(self, completions, **kwargs):
-        with torch.no_grad(): #, torch.autocast(device_type=self.device.type, dtype=torch.float16):
+        with torch.no_grad(), torch.autocast(device_type=self.device.type, dtype=torch.float16):
             image_paths = kwargs.get('target_img', [])
             batch_size = len(completions)
             images = None
