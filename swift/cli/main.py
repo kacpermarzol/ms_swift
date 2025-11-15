@@ -113,7 +113,7 @@ def cli_main(route_mapping: Optional[Dict[str, str]] = None) -> None:
         args = [python_cmd, file_path, *argv]
     else:
         args = [python_cmd, '-m', 'torch.distributed.run', *torchrun_args, file_path, *argv]
-    print(f"run sh: `{' '.join(args)}`", flush=True)
+    # print(f"run sh: `{' '.join(args)}`", flush=True)
     result = subprocess.run(args)
     if result.returncode != 0:
         sys.exit(result.returncode)

@@ -25,7 +25,7 @@ def _infer_model(pt_engine, system=None, messages=None):
     }], request_config=request_config)
     response = resp[0].choices[0].message.content
     messages += [{'role': 'assistant', 'content': response}]
-    logger.info(f'model: {pt_engine.model_info.model_name}, messages: {messages}')
+    # logger.info(f'model: {pt_engine.model_info.model_name}, messages: {messages}')
     return response
 
 
