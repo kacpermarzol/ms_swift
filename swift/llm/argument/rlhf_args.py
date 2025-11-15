@@ -207,7 +207,7 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
         if self.async_generate or not self.use_vllm:
             self.sleep_level = 0
         self.remove_unused_columns = False
-        logger.info(f'Setting args.remove_unused_columns: {self.remove_unused_columns}')
+        # logger.info(f'Setting args.remove_unused_columns: {self.remove_unused_columns}')
         if self.truncation_strategy is None:
             self.truncation_strategy = 'left'
         assert self.truncation_strategy in ['left', 'delete'
@@ -225,7 +225,7 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
                 'The soft_cache_length must be set when using soft overlong rewards.'
             if self.soft_max_length is None:
                 self.soft_max_length = self.max_completion_length
-                logger.info(f'Auto-configured soft_max_length = max_completion_length {self.max_completion_length}')
+                # logger.info(f'Auto-configured soft_max_length = max_completion_length {self.max_completion_length}')
 
         if self.kl_in_reward is None:
             self.kl_in_reward = self.advantage_estimator == 'rloo'
@@ -327,7 +327,7 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
         if self.gradient_accumulation_steps is None:
             if self.rlhf_type == 'grpo':
                 self.gradient_accumulation_steps = 1
-                logger.info('Setting default gradient_accumulation_steps to 1 for GRPO.')
+                # logger.info('Setting default gradient_accumulation_steps to 1 for GRPO.')
 
     def _check_grpo(self):
         if self.rlhf_type != 'grpo':
@@ -418,7 +418,7 @@ class RLHFArguments(TeacherModelArguments, GRPOArguments, PPOArguments, RewardMo
 
         # Parse the config file to dict
         self.teacher_deepspeed = json_parse_to_dict(self.teacher_deepspeed)
-        logger.info(f'Using teacher_deepspeed config: {self.teacher_deepspeed}')
+        # logger.info(f'Using teacher_deepspeed config: {self.teacher_deepspeed}')
 
     def _check_gkd(self):
         if self.rlhf_type != 'gkd':

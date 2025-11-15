@@ -927,12 +927,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             return self._compute_loss_chunked(model, inputs)
 
     def _compute_loss_single(self, model, inputs):
-        start_time = time.time()
         """Original loss computation logic for single batch processing."""
         loss, metrics_data = self._compute_loss_and_metrics(model, inputs)
         self._update_metrics(metrics_data)
-        end_time = time.time()
-        print(f"Single loss computation time: {end_time - start_time} seconds")
         return loss
 
     def _compute_loss_and_metrics(self, model, inputs):

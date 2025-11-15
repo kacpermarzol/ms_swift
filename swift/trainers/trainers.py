@@ -201,6 +201,7 @@ class RerankerTrainer(Trainer):
 
             return (loss, outputs) if return_outputs else loss
         else:
+            print("KM DEBUG")
             return super().compute_loss(model, inputs, return_outputs, num_items_in_batch)
 
 
