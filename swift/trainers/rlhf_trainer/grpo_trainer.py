@@ -927,13 +927,15 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
             return self._compute_loss_chunked(model, inputs)
 
     def _compute_loss_single(self, model, inputs):
+        start_time = time.time()
         """Original loss computation logic for single batch processing."""
         loss, metrics_data = self._compute_loss_and_metrics(model, inputs)
         self._update_metrics(metrics_data)
+        end_time = time.time()
+        print(f"Single loss computation time: {end_time - start_time} seconds")
         return loss
 
     def _compute_loss_and_metrics(self, model, inputs):
-        start_time = time.time()
         """Core loss computation without metrics recording."""
         mode = 'train' if self.model.training else 'eval'
 
@@ -1108,8 +1110,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         if mode == 'train' and self.chord_sft_iterator is not None:
             loss = compute_chord_loss(self, grpo_loss=loss)
 
-        end_time = time.time()
-        print(f'Loss computation completed in {end_time - start_time:.2f} seconds.')
         return loss, metrics_data
 
     def _update_metrics(self, metrics_data):
