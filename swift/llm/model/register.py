@@ -310,7 +310,7 @@ def get_model_tokenizer_from_local(model_dir: str,
     model = None
     if load_model:
         _patch_awq_compat(model_info)
-        logger.info(f'model_kwargs: {model_kwargs}')
+        # logger.info(f'model_kwargs: {model_kwargs}')
         if model_info.task_type in {'seq_cls', 'reranker'} and automodel_class is None and not return_dummy_model:
             with patch_automodel_for_sequence_classification(model_config=model_config, patch_from_pretrained=False):
                 try:

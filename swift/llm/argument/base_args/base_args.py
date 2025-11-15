@@ -110,7 +110,7 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
                 self.lazy_tokenize = True
             else:
                 self.lazy_tokenize = False
-            logger.info(f'Setting args.lazy_tokenize: {self.lazy_tokenize}')
+            # logger.info(f'Setting args.lazy_tokenize: {self.lazy_tokenize}')
         if self.lazy_tokenize:
             if self.packing:
                 raise ValueError('Packing and lazy_tokenize are incompatible.')
@@ -125,7 +125,7 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
             return
         for path in self.custom_register_path:
             import_external_file(path)
-        logger.info(f'Successfully registered {self.custom_register_path}.')
+        # logger.info(f'Successfully registered {self.custom_register_path}.')
 
     def _import_external_plugins(self):
         if isinstance(self.external_plugins, str):
@@ -134,7 +134,7 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
             return
         for external_plugin in self.external_plugins:
             import_external_file(external_plugin)
-        logger.info(f'Successfully imported external_plugins: {self.external_plugins}.')
+        # logger.info(f'Successfully imported external_plugins: {self.external_plugins}.')
 
     @staticmethod
     def _check_is_adapter(adapter_dir: str) -> bool:
@@ -164,8 +164,8 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
         self._init_stream()
         # The Seq2SeqTrainingArguments has a property called world_size, which cannot be assigned a value.
         self.rank, self.local_rank, self.global_world_size, self.local_world_size = get_dist_setting()
-        logger.info(f'rank: {self.rank}, local_rank: {self.local_rank}, '
-                    f'world_size: {self.global_world_size}, local_world_size: {self.local_world_size}')
+        # logger.info(f'rank: {self.rank}, local_rank: {self.local_rank}, '
+                    # f'world_size: {self.global_world_size}, local_world_size: {self.local_world_size}')
         if self.train_type not in extra_tuners:
             for adapter in self.adapters:
                 assert self._check_is_adapter(adapter), (
@@ -277,14 +277,14 @@ class BaseArguments(CompatArguments, GenerationArguments, QuantizeArguments, Dat
             value = getattr(self, key, None)
             if key in load_keys and (value is None or isinstance(value, (list, tuple)) and len(value) == 0):
                 setattr(self, key, old_value)
-        logger.info(f'Successfully loaded {args_path}.')
+        # logger.info(f'Successfully loaded {args_path}.')
 
     def save_args(self, output_dir=None) -> None:
         if is_master():
             output_dir = output_dir or self.output_dir
             os.makedirs(output_dir, exist_ok=True)
             fpath = os.path.join(output_dir, 'args.json')
-            logger.info(f'The {self.__class__.__name__} will be saved in: {fpath}')
+            # logger.info(f'The {self.__class__.__name__} will be saved in: {fpath}')
             with open(fpath, 'w', encoding='utf-8') as f:
                 json.dump(check_json_format(self.__dict__), f, ensure_ascii=False, indent=2)
 

@@ -160,7 +160,7 @@ def prepare_adapter(model):
         'use_rslora': args.use_rslora,
     }
     lora_config = LoraConfig(task_type='CAUSAL_LM', lora_dtype=args.lora_dtype, **lora_kwargs)
-    logger.info(f'lora_config: {lora_config}')
+    # logger.info(f'lora_config: {lora_config}')
     with _patch_deepcopy():
         model = Swift.prepare_model(model, lora_config)
     if args.ref_adapter_load:

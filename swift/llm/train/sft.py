@@ -88,8 +88,8 @@ class SwiftSft(SwiftPipeline, TunerMixin):
             _, val_dataset = load_dataset(
                 args.val_dataset, split_dataset_ratio=1.0, shuffle=args.val_dataset_shuffle, **dataset_kwargs)
             assert args.split_dataset_ratio == 0.
-        logger.info(f'train_dataset: {train_dataset}')
-        logger.info(f'val_dataset: {val_dataset}')
+        # logger.info(f'train_dataset: {train_dataset}')
+        # logger.info(f'val_dataset: {val_dataset}')
 
         return train_dataset, val_dataset
 

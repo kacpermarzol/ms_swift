@@ -154,12 +154,12 @@ class Template(ProcessorMixin):
         self.model_meta = processor.model_meta
         if self.max_length is None:
             self.max_length = self.model_info.max_model_len
-        logger.info(f'default_system: {repr(self.template_meta.default_system)}')
-        logger.info(f'max_length: {self.max_length}')
-        logger.info(f'response_prefix: {repr(self.template_meta.response_prefix)}')
-        logger.info(f'agent_template: {self._agent_template}')
-        if self.model_meta.is_multimodal:
-            logger.info(f'norm_bbox: {self.norm_bbox}')
+        # logger.info(f'default_system: {repr(self.template_meta.default_system)}')
+        # logger.info(f'max_length: {self.max_length}')
+        # logger.info(f'response_prefix: {repr(self.template_meta.response_prefix)}')
+        # logger.info(f'agent_template: {self._agent_template}')
+        # if self.model_meta.is_multimodal:
+            # logger.info(f'norm_bbox: {self.norm_bbox}')
         tokenizer = self.tokenizer
 
         for i, token in enumerate(self.placeholder_tokens):

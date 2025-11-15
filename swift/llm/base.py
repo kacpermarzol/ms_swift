@@ -45,7 +45,7 @@ class SwiftPipeline(ABC, ProcessorMixin):
 
     def main(self):
         logger.info(f'Start time of running main: {dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")}')
-        logger.info(f'swift.__version__: {swift.__version__}')
+        # logger.info(f'swift.__version__: {swift.__version__}')
         result = self.run()
         logger.info(f'End time of running main: {dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")}')
         return result
