@@ -491,7 +491,7 @@ class DenoisingReward(ORM):
         input_resolution: Optional[int] = None,  # None => brak resize w reward
         compute_dtype: torch.dtype = torch.float16,
         reward_num_timesteps: int = 5,
-        normalize_batch_reward: bool = True,
+        normalize_batch_reward: bool = True,  # pozostawione dla kompatybilności, nieużywane
         sampler_kind: str = "lms",
         seed: int = 42,
     ):
@@ -524,7 +524,6 @@ class DenoisingReward(ORM):
                 )
 
             # --- scheduler do NOISINGU (reward) ---
-            # SD 1.4 używa predykcji epsilon.
             self.train_scheduler = DDPMScheduler(
                 beta_start=0.00085,
                 beta_end=0.012,
@@ -591,10 +590,49 @@ class DenoisingReward(ORM):
 
     # --- reward dla jednego promptu ---
 
+    # @torch.no_grad()
+    # def _reward_for_prompt(
+    #     self, clean_latents: torch.Tensor, adversarial_prompt: str, *, generator: Optional[torch.Generator] = None
+    # ) -> float:
+    #     input_ids = self.tokenizer(
+    #         adversarial_prompt,
+    #         padding="max_length",
+    #         max_length=self.tokenizer.model_max_length,
+    #         truncation=True,
+    #         return_tensors="pt",
+    #     ).input_ids.to(self.device)
+    #     encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0].to(dtype=self.compute_dtype)
+
+    #     T = int(self.train_scheduler.config.num_train_timesteps)
+    #     pred_type = self.train_scheduler.config.get("prediction_type", "epsilon") \
+    #         if isinstance(self.train_scheduler.config, Mapping) else "epsilon"
+
+    #     losses = []
+    #     for _ in range(self.reward_num_timesteps):
+    #         t = torch.randint(low=0, high=T, size=(1,), device=self.device, generator=generator).long()
+    #         noise = _randn_like(clean_latents, generator=generator)
+    #         noisy_latents = self.train_scheduler.add_noise(clean_latents, noise, t)
+    #         predicted = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
+
+    #         if pred_type == "epsilon":
+    #             target = noise
+    #         elif pred_type in ("v_prediction", "v-prediction", "v"):
+    #             target = self.train_scheduler.get_velocity(clean_latents, noise, t)
+    #         else:
+    #             target = noise  # fallback
+
+    #         loss = F.mse_loss(predicted.float(), target.float(), reduction="mean")
+    #         losses.append(loss)
+
+    #     mean_loss = torch.stack(losses).mean()
+    #     return -float(mean_loss.item())
+
+    # --- reward dla jednego promptu (wersja z porównaniem warunkowego i bezwarunkowego) ---
     @torch.no_grad()
     def _reward_for_prompt(
         self, clean_latents: torch.Tensor, adversarial_prompt: str, *, generator: Optional[torch.Generator] = None
     ) -> float:
+        # embeddings dla promptu
         input_ids = self.tokenizer(
             adversarial_prompt,
             padding="max_length",
@@ -602,21 +640,36 @@ class DenoisingReward(ORM):
             truncation=True,
             return_tensors="pt",
         ).input_ids.to(self.device)
-        encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0].to(dtype=self.compute_dtype)
+        enc_cond = self.text_encoder(input_ids=input_ids)[0].to(dtype=self.compute_dtype)
 
+        # embeddings dla uncond ("")
+        uncond_ids = self.tokenizer(
+            [""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt"
+        ).input_ids.to(self.device)
+        enc_uncond = self.text_encoder(input_ids=uncond_ids)[0].to(dtype=self.compute_dtype)
+
+        # konfiguracja timesteps
         T = int(self.train_scheduler.config.num_train_timesteps)
-        if isinstance(self.train_scheduler.config, Mapping):
-            pred_type = self.train_scheduler.config.get("prediction_type", "epsilon")
-        else:
-            pred_type = "epsilon"
+        pred_type = (
+            self.train_scheduler.config.get("prediction_type", "epsilon")
+            if isinstance(self.train_scheduler.config, Mapping)
+            else "epsilon"
+        )
 
-        losses = []
+        improvements = []
         for _ in range(self.reward_num_timesteps):
+            # losowanie kroku i szumu
             t = torch.randint(low=0, high=T, size=(1,), device=self.device, generator=generator).long()
             noise = _randn_like(clean_latents, generator=generator)
-            noisy_latents = self.train_scheduler.add_noise(clean_latents, noise, t)
-            predicted = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
 
+            # tworzenie zaszumionych latentów
+            noisy = self.train_scheduler.add_noise(clean_latents, noise, t)
+
+            # predykcje UNet: z warunkiem i bez
+            pred_c = self.unet(noisy, t, encoder_hidden_states=enc_cond).sample
+            pred_u = self.unet(noisy, t, encoder_hidden_states=enc_uncond).sample
+
+            # cel (epsilon lub velocity); obie ścieżki porównywane do tego samego celu
             if pred_type == "epsilon":
                 target = noise
             elif pred_type in ("v_prediction", "v-prediction", "v"):
@@ -624,11 +677,15 @@ class DenoisingReward(ORM):
             else:
                 target = noise  # fallback
 
-            loss = F.mse_loss(predicted, target, reduction="mean")
-            losses.append(loss)
+            # MSE w FP32 dla lepszej rozdzielczości metryki
+            l_c = F.mse_loss(pred_c.float(), target.float(), reduction="mean")
+            l_u = F.mse_loss(pred_u.float(), target.float(), reduction="mean")
 
-        mean_loss = torch.stack(losses).mean()
-        return -float(mean_loss.item())
+            # ile warunek tekstowy poprawia odszumianie (>0 lepiej)
+            improvements.append((l_u - l_c).float())
+
+        mean_improvement = torch.stack(improvements).float().mean()
+        return float(mean_improvement.item())
 
     # --- generacja do wizualizacji ---
 
@@ -697,7 +754,7 @@ class DenoisingReward(ORM):
         adversarial_prompts: List[str] = []
         images: Optional[List[Dict[str, Any]]] = None
 
-        # deterministyczny RNG per-step (możesz też dodać +i jeśli chcesz różne seedy w obrębie batcha)
+        # deterministyczny RNG per-step (wizualnie powtarzalny eval; trening nadal losowy jeśli step się zmienia)
         gen = torch.Generator(device=self.device)
         gen.manual_seed(self.seed + max(0, step))
 
@@ -715,22 +772,22 @@ class DenoisingReward(ORM):
 
             adversarial_prompts.append(adversarial_prompt)
 
-            # w razie braku ścieżki obrazu — bezpieczny fallback 0.0 (nie psuje skali GRPO)
+            # brak obrazka → neutralny fallback 0.0
             if not img_path:
                 print(f"[DenoisingReward] Missing image path for sample {i}")
-                rewards.append(-1.0)
+                rewards.append(0.0)
                 continue
 
             clean_latents = self._get_cached_image_latent(img_path)
             if clean_latents is None:
-                rewards.append(-1.0)
+                rewards.append(0.0)
                 continue
 
             # wyliczenie nagrody; gwarantujemy float
             r = self._reward_for_prompt(clean_latents, adversarial_prompt, generator=gen)
             rewards.append(float(r))
 
-        # UWAGA: brak batchowej normalizacji tutaj — GRPO zrobi własną normalizację
+        # Brak batchowej normalizacji tutaj — GRPO zajmie się standaryzacją
 
         # Wizualizacja co 50 kroków lub w trybie eval
         if ((step + 1) % 50 == 0 or mode == "eval") and adversarial_prompts:
@@ -767,6 +824,7 @@ class DenoisingReward(ORM):
                 print(f"[DenoisingReward] ERROR generating original_prompt sample: {e}")
 
         return rewards, images
+
 
 
 
