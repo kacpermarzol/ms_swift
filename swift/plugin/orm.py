@@ -412,12 +412,11 @@ class SoftOverlong(ORM):
 
 
 def preprocess_target_image(image, size = 512, interpolation=InterpolationMode.BICUBIC):
-
     transform = transforms.Compose([
         transforms.Resize(size, interpolation=interpolation),
         transforms.CenterCrop(size),
         transforms.ToTensor(),
-        transforms.Normalize([0.5], [0.5])
+        transforms.Normalize([0.5,0.5,0.5], [0.5,0.5,0.5])
     ])
 
     image = transform(image)
