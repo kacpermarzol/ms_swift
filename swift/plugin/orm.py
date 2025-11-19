@@ -490,7 +490,7 @@ class DenoisingReward(ORM):
         *,
         input_resolution: Optional[int] = None,  # None => brak resize w reward
         compute_dtype: torch.dtype = torch.float16,
-        reward_num_timesteps: int = 5,
+        reward_num_timesteps: int = 32,
         normalize_batch_reward: bool = True,  # pozostawione dla kompatybilności, nieużywane
         sampler_kind: str = "lms",
         seed: int = 42,
@@ -630,62 +630,64 @@ class DenoisingReward(ORM):
     # --- reward dla jednego promptu (wersja z porównaniem warunkowego i bezwarunkowego) ---
     @torch.no_grad()
     def _reward_for_prompt(
-        self, clean_latents: torch.Tensor, adversarial_prompt: str, *, generator: Optional[torch.Generator] = None
+        self,
+        clean_latents: torch.Tensor,
+        adversarial_prompt: str,
+        *,
+        t_list: torch.Tensor,                       # [K] long, wspólne dla batcha
+        noise_list: List[torch.Tensor],             # K x [1,4,h,w], wspólne per-obraz
     ) -> float:
-        # embeddings dla promptu
-        input_ids = self.tokenizer(
+        """Średnia (po K krokach) poprawa względem uncond: mean( MSE_uncond - MSE_cond ).
+        MSE liczone w FP32. Bez ważenia i bez alignmentu.
+        """
+        # embeddings dla promptu (cond) i dla uncond ("")
+        ids_cond = self.tokenizer(
             adversarial_prompt,
             padding="max_length",
             max_length=self.tokenizer.model_max_length,
             truncation=True,
             return_tensors="pt",
         ).input_ids.to(self.device)
-        enc_cond = self.text_encoder(input_ids=input_ids)[0].to(dtype=self.compute_dtype)
+        enc_cond = self.text_encoder(input_ids=ids_cond)[0].to(dtype=self.compute_dtype)
 
-        # embeddings dla uncond ("")
         uncond_ids = self.tokenizer(
             [""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt"
         ).input_ids.to(self.device)
         enc_uncond = self.text_encoder(input_ids=uncond_ids)[0].to(dtype=self.compute_dtype)
 
-        # konfiguracja timesteps
-        T = int(self.train_scheduler.config.num_train_timesteps)
         pred_type = (
             self.train_scheduler.config.get("prediction_type", "epsilon")
-            if isinstance(self.train_scheduler.config, Mapping)
-            else "epsilon"
+            if isinstance(self.train_scheduler.config, Mapping) else "epsilon"
         )
 
-        improvements = []
-        for _ in range(self.reward_num_timesteps):
-            # losowanie kroku i szumu
-            t = torch.randint(low=0, high=T, size=(1,), device=self.device, generator=generator).long()
-            noise = _randn_like(clean_latents, generator=generator)
+        K = int(self.reward_num_timesteps)
+        assert t_list.shape[0] == K and len(noise_list) == K, "t_list/noise_list muszą mieć długość K."
 
-            # tworzenie zaszumionych latentów
+        improvements: List[torch.Tensor] = []
+        for k in range(K):
+            t = t_list[k].view(1)                              # [1]
+            noise = noise_list[k]                              # [1,4,H/8,W/8]
             noisy = self.train_scheduler.add_noise(clean_latents, noise, t)
 
-            # predykcje UNet: z warunkiem i bez
             pred_c = self.unet(noisy, t, encoder_hidden_states=enc_cond).sample
             pred_u = self.unet(noisy, t, encoder_hidden_states=enc_uncond).sample
 
-            # cel (epsilon lub velocity); obie ścieżki porównywane do tego samego celu
             if pred_type == "epsilon":
                 target = noise
             elif pred_type in ("v_prediction", "v-prediction", "v"):
                 target = self.train_scheduler.get_velocity(clean_latents, noise, t)
             else:
-                target = noise  # fallback
+                target = noise
 
-            # MSE w FP32 dla lepszej rozdzielczości metryki
+            # MSE w FP32
             l_c = F.mse_loss(pred_c.float(), target.float(), reduction="mean")
             l_u = F.mse_loss(pred_u.float(), target.float(), reduction="mean")
 
-            # ile warunek tekstowy poprawia odszumianie (>0 lepiej)
-            improvements.append((l_u - l_c).float())
+            improvements.append((l_u - l_c).float())          # >0 oznacza lepiej z kondycją
 
         mean_improvement = torch.stack(improvements).float().mean()
         return float(mean_improvement.item())
+
 
     # --- generacja do wizualizacji ---
 
@@ -754,15 +756,31 @@ class DenoisingReward(ORM):
         adversarial_prompts: List[str] = []
         images: Optional[List[Dict[str, Any]]] = None
 
-        # deterministyczny RNG per-step (wizualnie powtarzalny eval; trening nadal losowy jeśli step się zmienia)
+        # RNG deterministyczny per-step (jeśli chcesz różne seedy między runami, dodaj offset per-run)
         gen = torch.Generator(device=self.device)
         gen.manual_seed(self.seed + max(0, step))
+
+        # cache latentów dla obrazów w batchu
+        latents_per_img: Dict[str, Optional[torch.Tensor]] = {}
+        for img_path in image_paths:
+            if img_path and img_path not in latents_per_img:
+                latents_per_img[img_path] = self._get_cached_image_latent(img_path)
+
+        # pre-losowanie wspólnej listy kroków t (K) oraz szumów per obraz i per krok
+        K = int(self.reward_num_timesteps)
+        T = int(self.train_scheduler.config.num_train_timesteps)
+        t_list = torch.randint(low=0, high=T, size=(K,), device=self.device, generator=gen).long()
+
+        noise_bank: Dict[str, List[torch.Tensor]] = {}
+        for img_path, latents in latents_per_img.items():
+            if latents is None:
+                continue
+            noise_bank[img_path] = [_randn_like(latents, generator=gen) for _ in range(K)]
 
         for i in range(batch_size):
             generated_text = completions[i]
             img_path = image_paths[i] if i < len(image_paths) else None
 
-            # wydobycie promptu z <answer>...</answer> lub fallback na całą odpowiedź
             try:
                 match = re.search(r"<answer>(.*?)</answer>", generated_text, re.DOTALL)
                 adversarial_prompt = (match.group(1) if match else generated_text).strip()[:1024]
@@ -772,28 +790,32 @@ class DenoisingReward(ORM):
 
             adversarial_prompts.append(adversarial_prompt)
 
-            # brak obrazka → neutralny fallback 0.0
             if not img_path:
                 print(f"[DenoisingReward] Missing image path for sample {i}")
                 rewards.append(0.0)
                 continue
 
-            clean_latents = self._get_cached_image_latent(img_path)
+            clean_latents = latents_per_img.get(img_path, None)
             if clean_latents is None:
                 rewards.append(0.0)
                 continue
 
-            # wyliczenie nagrody; gwarantujemy float
-            r = self._reward_for_prompt(clean_latents, adversarial_prompt, generator=gen)
+            noise_list = noise_bank.get(img_path, None)
+            if noise_list is None:
+                rewards.append(0.0)
+                continue
+
+            r = self._reward_for_prompt(
+                clean_latents,
+                adversarial_prompt,
+                t_list=t_list,
+                noise_list=noise_list,
+            )
             rewards.append(float(r))
 
-        # Brak batchowej normalizacji tutaj — GRPO zajmie się standaryzacją
-
-        # Wizualizacja co 50 kroków lub w trybie eval
+        # wizualizacja co 50 kroków lub w trybie eval (bez zmian)
         if ((step + 1) % 50 == 0 or mode == "eval") and adversarial_prompts:
             images = []
-
-            # obraz referencyjny (target) do porównania
             if image_paths:
                 try:
                     target_img_path = image_paths[0]
@@ -804,7 +826,6 @@ class DenoisingReward(ORM):
 
             print(f"[DenoisingReward] Step {step}: generating {len(adversarial_prompts)} images for visualization")
 
-            # próbki dla poszczególnych promptów
             for prompt in adversarial_prompts:
                 try:
                     sample = {"prompt": prompt}
@@ -814,7 +835,6 @@ class DenoisingReward(ORM):
                 except Exception as e:
                     print(f"[DenoisingReward] ERROR generating sample for prompt: {e}")
 
-            # dodatkowo obraz z oryginalnego promptu
             try:
                 base_sample = {"original_prompt": original_prompt}
                 img = self.generate_image(prompt=original_prompt, height=512, width=512)
@@ -824,6 +844,7 @@ class DenoisingReward(ORM):
                 print(f"[DenoisingReward] ERROR generating original_prompt sample: {e}")
 
         return rewards, images
+
 
 
 
