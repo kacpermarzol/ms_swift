@@ -490,7 +490,7 @@ class DenoisingReward(ORM):
         *,
         input_resolution: Optional[int] = None,  # None => brak resize w reward
         compute_dtype: torch.dtype = torch.float16,
-        reward_num_timesteps: int = 32,
+        reward_num_timesteps: int = 24,
         normalize_batch_reward: bool = True,  # pozostawione dla kompatybilności, nieużywane
         sampler_kind: str = "lms",
         seed: int = 42,
