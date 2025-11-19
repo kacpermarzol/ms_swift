@@ -1,0 +1,15 @@
+{
+	"folders": [
+		{
+			"path": "../../.."
+		},
+		{
+			"name": "Diffusion-MU-Attack",
+			"path": "../../../../Diffusion-MU-Attack"
+		}
+	],
+	"settings": {
+		"python-envs.defaultEnvManager": "ms-python.python:conda",
+		"python-envs.defaultPackageManager": "ms-python.python:conda"
+	}
+}

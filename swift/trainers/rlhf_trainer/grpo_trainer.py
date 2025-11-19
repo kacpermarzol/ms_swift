@@ -68,6 +68,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         self.ref_adapter_name = getattr(args, 'ref_adapter_name', None)
         self.model_adapter_name = None
         self.is_multimodal = model.model_meta.is_multimodal
+        self.detected = False
 
         model.warnings_issued['estimate_tokens'] = True
         kwargs['data_collator'] = identity_data_collator  # No data collation is needed in GRPO
@@ -350,34 +351,45 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         original_prompt = inputs[0]['messages'][1]['content']
                         reward_kwargs.update({'original_prompt': original_prompt})
                         output_reward_func, images = reward_func(completions, **reward_kwargs)
+                        if images:
+                            if mode == 'eval':
+                                best_idx = torch.argmax(output_reward_func)
+                                best_image_dict = images[best_idx+1] ## becasue the first one is target
+                                wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
+                                wandb.log({f"EVAL_best_image:": wandb.Image(best_image_dict["generated"], caption=best_image_dict["prompt"])})
+                                original_prompt_dict = images[-1]
+                                wandb.log({"EVAL_No attack": wandb.Image(original_prompt_dict["generated"], caption=original_prompt_dict["original_prompt"])})
+                            else:
+                                detected = []
+                                for img_idx, img_dict in enumerate(images):
+                                    if "target" in img_dict:
+                                        wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
+                                    elif "original_prompt" in img_dict:
+                                        wandb.log({"No attack": wandb.Image(img_dict["generated"], caption=img_dict["original_prompt"])})
+                                    else:
+                                        wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
+                                        if img_dict["is_nude"]:
+                                            detected.append(img_idx)
+                                if detected:
+                                    logger.log(f"Nudity detected in generated images at indices: {detected} \n The training will stop and images and prompts will be saved to folder for review.")
+                                    save_path = os.path.join(self.args.output_dir, "nudity_detected")
+                                    os.makedirs(save_path, exist_ok=True)
+                                    for idx in detected:
+                                        img_dict = images[idx]
+                                        img_dict["generated"].save(os.path.join(save_path, f"generated_image_{idx}.png"))
+                                        with open(os.path.join(save_path, f"prompt_{idx}.txt"), "w") as f:
+                                            f.write(f'prompt: {img_dict["prompt"]}\n')
+                                            f.write(f'nude: {img_dict["nude"]}\n')
+                                            f.write(f'score: {img_dict["score"]}\n')
+                                        self.detected = True
+
+
                     else:
                         output_reward_func = reward_func(completions, **reward_kwargs)
 
                     output_reward_func = [reward if reward is not None else torch.nan for reward in output_reward_func]
                     output_reward_func = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
 
-                    # mask = ~torch.isnan(output_reward_func)
-                    # if mask.any():  
-                        # mean = output_reward_func[mask].mean()
-                        # std = output_reward_func[mask].std(unbiased=False) + 1e-8
-                        # output_reward_func[mask] = (output_reward_func[mask] - mean) / std
-
-                    if images:
-                        if mode == 'eval':
-                            best_idx = torch.argmax(output_reward_func)
-                            best_image_dict = images[best_idx+1] ## becasue the first one is target
-                            wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
-                            wandb.log({f"EVAL_best_image:": wandb.Image(best_image_dict["generated"], caption=best_image_dict["prompt"])})
-                            original_prompt_dict = images[-1]
-                            wandb.log({"EVAL_No attack": wandb.Image(original_prompt_dict["generated"], caption=original_prompt_dict["original_prompt"])})
-                        else:
-                            for img_idx, img_dict in enumerate(images):
-                                if "target" in img_dict:
-                                    wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
-                                elif "original_prompt" in img_dict:
-                                    wandb.log({"No attack": wandb.Image(img_dict["generated"], caption=img_dict["original_prompt"])})
-                                else:
-                                    wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
                 rewards_per_func[:, i] = output_reward_func
 
         if torch.isnan(rewards_per_func).all(dim=1).any():
@@ -1517,15 +1529,15 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
         return output
 
     def training_step(self, model: nn.Module, inputs: DataType, num_items_in_batch=None) -> torch.Tensor:
-        start = time.time()
+        if self.detected:
+            raise RuntimeError("Detected content! Stopping training.")
         if self.args.async_generate:
             # Wait for the eval rollout to complete
             while not self.is_async_generate_eval_rollout_done():
                 time.sleep(0.1)
                 print("Waiting for eval rollout to complete...")
         result = super().training_step(model, inputs, num_items_in_batch)
-        end = time.time()
-        # print(f"Single loss computation time: {end - start} seconds")
+
         return result
 
     def old_policy(self):
