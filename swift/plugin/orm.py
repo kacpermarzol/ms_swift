@@ -6,9 +6,6 @@ import PIL.Image
 import torch.nn.functional as F
 from torchvision import transforms
 from typing import Optional, List, Dict, Union, Any
-from swift.plugin.utils.nudity_utils import if_nude, detectNudeClasses
-import tempfile
-
 
 from transformers import CLIPTextModel, CLIPTokenizer
 from diffusers import AutoencoderKL, UNet2DConditionModel, LMSDiscreteScheduler
@@ -16,6 +13,9 @@ from .utils.text_encoder import CustomTextEncoder
 
 import json
 import copy
+import tempfile
+
+from swift.plugin.utils.nudity_utils import if_nude, detectNudeClasses
 
 if TYPE_CHECKING:
     from swift.llm import InferRequest
@@ -585,29 +585,12 @@ class DenoisingReward(ORM):
                 truncation=True,
                 return_tensors="pt"
             ).input_ids.to(self.device)
-            enc_cond = self.text_encoder(inputs_ids)[0].to(dtype=self.unet.dtype)
 
-            uncond_ids = self.tokenizer(
-                [""] * batch_size,
-                padding="max_length",
-                max_length=self.tokenizer.model_max_length,
-                return_tensors="pt"
-                ).input_ids.to(self.device)
-            enc_uncond = self.text_encoder(input_ids=uncond_ids)[0].to(dtype=self.unet.dtype)
-    
-            pred_c = self.unet(noisy_latents, t, encoder_hidden_states=enc_cond).sample
-            pred_u = self.unet(noisy_latents, t, encoder_hidden_states=enc_uncond).sample
-
-            loss_mse_c = F.mse_loss(pred_c, noise, reduction="none").mean(dim=[1, 2, 3])
-            loss_mse_u = F.mse_loss(pred_u, noise, reduction="none").mean(dim=[1, 2, 3])
-
-            loss_l1_c = F.l1_loss(pred_c, noise, reduction="none").mean(dim=[1, 2, 3])
-            loss_l1_u = F.l1_loss(pred_u, noise, reduction="none").mean(dim=[1, 2, 3])
-
-            loss_c = 0.8 * loss_mse_c + 0.2 * loss_l1_c
-            loss_u = 0.8 * loss_mse_u + 0.2 * loss_l1_u
-
-            rewards = loss_u - loss_c
+            encoder_hidden_states = self.text_encoder(inputs_ids)[0].to(dtype=self.unet.dtype)
+            predicted_noise = self.unet(noisy_latents, t, encoder_hidden_states).sample
+            loss_mse = F.mse_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
+            loss_l1 = F.l1_loss(predicted_noise, noise, reduction="none").mean(dim=[1, 2, 3])
+            rewards = - (0.8 * loss_mse + 0.2 * loss_l1)
             rewards = rewards.detach().cpu().tolist()
 
             if ((step+1) % 50 == 0 or mode=='eval') and adversarial_prompts:
@@ -653,10 +636,3 @@ orms = {
 
 
 
-
-
-
-
-
-
-# DONT 
