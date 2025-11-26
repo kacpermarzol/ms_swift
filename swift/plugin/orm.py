@@ -478,7 +478,9 @@ def preprocess_target_image(image: Image.Image, device: torch.device, resolution
 
 class DenoisingReward(ORM):
     """
-    Reward: MSE między predykcją UNet a celem (epsilon/velocity) przy DDPM noisingu.
+    Reward: średnia po K krokach poprawa względem uncond:
+        mean_t( MSE_uncond(t) - MSE_cond(t) )
+    MSE liczone między predykcją UNet a celem (epsilon/velocity) przy DDPM noisingu.
     Wizualizacja: sampling przez oddzielny scheduler (LMS domyślnie).
     """
 
@@ -490,7 +492,7 @@ class DenoisingReward(ORM):
         *,
         input_resolution: Optional[int] = None,  # None => brak resize w reward
         compute_dtype: torch.dtype = torch.float16,
-        reward_num_timesteps: int = 24,
+        reward_num_timesteps: int = 12,
         normalize_batch_reward: bool = True,  # pozostawione dla kompatybilności, nieużywane
         sampler_kind: str = "lms",
         seed: int = 42,
@@ -588,59 +590,23 @@ class DenoisingReward(ORM):
             print(f"[DenoisingReward] ERROR processing image {image_path}: {e}")
             return None
 
-    # --- reward dla jednego promptu ---
-
-    # @torch.no_grad()
-    # def _reward_for_prompt(
-    #     self, clean_latents: torch.Tensor, adversarial_prompt: str, *, generator: Optional[torch.Generator] = None
-    # ) -> float:
-    #     input_ids = self.tokenizer(
-    #         adversarial_prompt,
-    #         padding="max_length",
-    #         max_length=self.tokenizer.model_max_length,
-    #         truncation=True,
-    #         return_tensors="pt",
-    #     ).input_ids.to(self.device)
-    #     encoder_hidden_states = self.text_encoder(input_ids=input_ids)[0].to(dtype=self.compute_dtype)
-
-    #     T = int(self.train_scheduler.config.num_train_timesteps)
-    #     pred_type = self.train_scheduler.config.get("prediction_type", "epsilon") \
-    #         if isinstance(self.train_scheduler.config, Mapping) else "epsilon"
-
-    #     losses = []
-    #     for _ in range(self.reward_num_timesteps):
-    #         t = torch.randint(low=0, high=T, size=(1,), device=self.device, generator=generator).long()
-    #         noise = _randn_like(clean_latents, generator=generator)
-    #         noisy_latents = self.train_scheduler.add_noise(clean_latents, noise, t)
-    #         predicted = self.unet(noisy_latents, t, encoder_hidden_states=encoder_hidden_states).sample
-
-    #         if pred_type == "epsilon":
-    #             target = noise
-    #         elif pred_type in ("v_prediction", "v-prediction", "v"):
-    #             target = self.train_scheduler.get_velocity(clean_latents, noise, t)
-    #         else:
-    #             target = noise  # fallback
-
-    #         loss = F.mse_loss(predicted.float(), target.float(), reduction="mean")
-    #         losses.append(loss)
-
-    #     mean_loss = torch.stack(losses).mean()
-    #     return -float(mean_loss.item())
-
-    # --- reward dla jednego promptu (wersja z porównaniem warunkowego i bezwarunkowego) ---
     @torch.no_grad()
     def _reward_for_prompt(
         self,
         clean_latents: torch.Tensor,
         adversarial_prompt: str,
         *,
-        t_list: torch.Tensor,                       # [K] long, wspólne dla batcha
-        noise_list: List[torch.Tensor],             # K x [1,4,h,w], wspólne per-obraz
+        t_list: torch.Tensor,                       # [K] long
+        noise_list: List[torch.Tensor],             # length-K list of [1,4,h,w]
+        uncond_losses: torch.Tensor,                # [K] FP32 MSE_uncond for this image
     ) -> float:
-        """Średnia (po K krokach) poprawa względem uncond: mean( MSE_uncond - MSE_cond ).
-        MSE liczone w FP32. Bez ważenia i bez alignmentu.
         """
-        # embeddings dla promptu (cond) i dla uncond ("")
+        Reward dla pojedynczego promptu:
+            mean_t( MSE_uncond(t) - MSE_cond(t) )
+        Uncond_losses są wstępnie policzone per-obraz i timestep.
+        """
+
+        # tokenize & encode conditional prompt
         ids_cond = self.tokenizer(
             adversarial_prompt,
             padding="max_length",
@@ -648,30 +614,29 @@ class DenoisingReward(ORM):
             truncation=True,
             return_tensors="pt",
         ).input_ids.to(self.device)
+
         enc_cond = self.text_encoder(input_ids=ids_cond)[0].to(dtype=self.compute_dtype)
 
-        uncond_ids = self.tokenizer(
-            [""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt"
-        ).input_ids.to(self.device)
-        enc_uncond = self.text_encoder(input_ids=uncond_ids)[0].to(dtype=self.compute_dtype)
-
+        # scheduler prediction type
         pred_type = (
             self.train_scheduler.config.get("prediction_type", "epsilon")
             if isinstance(self.train_scheduler.config, Mapping) else "epsilon"
         )
 
         K = int(self.reward_num_timesteps)
-        assert t_list.shape[0] == K and len(noise_list) == K, "t_list/noise_list muszą mieć długość K."
+        assert t_list.shape[0] == K and len(noise_list) == K
+        assert uncond_losses.shape[0] == K
 
         improvements: List[torch.Tensor] = []
         for k in range(K):
-            t = t_list[k].view(1)                              # [1]
-            noise = noise_list[k]                              # [1,4,H/8,W/8]
+            t = t_list[k].view(1)              # [1]
+            noise = noise_list[k]              # [1,4,H/8,W/8]
             noisy = self.train_scheduler.add_noise(clean_latents, noise, t)
 
+            # UNet forward, conditional
             pred_c = self.unet(noisy, t, encoder_hidden_states=enc_cond).sample
-            pred_u = self.unet(noisy, t, encoder_hidden_states=enc_uncond).sample
 
+            # compute correct target
             if pred_type == "epsilon":
                 target = noise
             elif pred_type in ("v_prediction", "v-prediction", "v"):
@@ -681,13 +646,13 @@ class DenoisingReward(ORM):
 
             # MSE w FP32
             l_c = F.mse_loss(pred_c.float(), target.float(), reduction="mean")
-            l_u = F.mse_loss(pred_u.float(), target.float(), reduction="mean")
+            # cached MSE_uncond dla tego timesteppu
+            l_u = uncond_losses[k]
 
             improvements.append((l_u - l_c).float())          # >0 oznacza lepiej z kondycją
 
         mean_improvement = torch.stack(improvements).float().mean()
         return float(mean_improvement.item())
-
 
     # --- generacja do wizualizacji ---
 
@@ -777,6 +742,47 @@ class DenoisingReward(ORM):
                 continue
             noise_bank[img_path] = [_randn_like(latents, generator=gen) for _ in range(K)]
 
+        # --- precompute unconditional losses per image and timestep (cache) ---
+        # embeddings dla uncond ("")
+        uncond_ids = self.tokenizer(
+            [""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt"
+        ).input_ids.to(self.device)
+        enc_uncond = self.text_encoder(input_ids=uncond_ids)[0].to(dtype=self.compute_dtype)
+
+        pred_type = (
+            self.train_scheduler.config.get("prediction_type", "epsilon")
+            if isinstance(self.train_scheduler.config, Mapping) else "epsilon"
+        )
+
+        uncond_loss_bank: Dict[str, torch.Tensor] = {}
+        for img_path, clean_latents in latents_per_img.items():
+            if clean_latents is None:
+                continue
+            noise_list = noise_bank.get(img_path, None)
+            if noise_list is None:
+                continue
+
+            per_t_losses: List[torch.Tensor] = []
+            for k in range(K):
+                t = t_list[k].view(1)
+                noise = noise_list[k]
+                noisy = self.train_scheduler.add_noise(clean_latents, noise, t)
+
+                pred_u = self.unet(noisy, t, encoder_hidden_states=enc_uncond).sample
+
+                if pred_type == "epsilon":
+                    target = noise
+                elif pred_type in ("v_prediction", "v-prediction", "v"):
+                    target = self.train_scheduler.get_velocity(clean_latents, noise, t)
+                else:
+                    target = noise
+
+                l_u = F.mse_loss(pred_u.float(), target.float(), reduction="mean")
+                per_t_losses.append(l_u.float())
+
+            uncond_loss_bank[img_path] = torch.stack(per_t_losses, dim=0)  # [K]
+
+        # --- pętla po promptach ---
         for i in range(batch_size):
             generated_text = completions[i]
             img_path = image_paths[i] if i < len(image_paths) else None
@@ -805,11 +811,17 @@ class DenoisingReward(ORM):
                 rewards.append(0.0)
                 continue
 
+            uncond_losses = uncond_loss_bank.get(img_path, None)
+            if uncond_losses is None:
+                rewards.append(0.0)
+                continue
+
             r = self._reward_for_prompt(
                 clean_latents,
                 adversarial_prompt,
                 t_list=t_list,
                 noise_list=noise_list,
+                uncond_losses=uncond_losses,
             )
             rewards.append(float(r))
 
@@ -844,6 +856,7 @@ class DenoisingReward(ORM):
                 print(f"[DenoisingReward] ERROR generating original_prompt sample: {e}")
 
         return rewards, images
+
 
 
 
