@@ -484,7 +484,6 @@ class DenoisingReward(ORM):
             # Image generation parameters
             uncond_input_ids = self.tokenizer([""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt").input_ids.to(self.device)
             self.uncond_embeddings = self.text_encoder(input_ids=uncond_input_ids)[0]
-
             self.concept = concept
 
             print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
@@ -510,7 +509,7 @@ class DenoisingReward(ORM):
             print(f"[DenoisingReward] ERROR loading/processing image {image_path}: {e}")
             return None
 
-    def generate_image(self, prompt, height=512, width=512, num_inference_steps=100, guidance_scale=7.5):
+    def generate_image(self, prompt, height=512, width=512, num_inference_steps=100, guidance_scale=7.5, seed=0):
         input_ids = self.tokenizer(prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt", truncation=True).input_ids.to(self.device)
         text_embeddings = self.text_encoder(input_ids=input_ids)[0]
         
@@ -522,7 +521,7 @@ class DenoisingReward(ORM):
         scheduler.set_timesteps(num_inference_steps)
 
         gen = torch.Generator(device=self.device)
-        gen.manual_seed(self.seed)
+        gen.manual_seed(seed)
 
         latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),  generator=gen, device=self.device, dtype=self.unet.dtype)
         latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
@@ -560,6 +559,9 @@ class DenoisingReward(ORM):
 
             step = kwargs.get('step', -1)
             mode = kwargs.get('mode', False)
+            guidance = kwargs.get("guidance", 7.5)
+            seed = kwargs.get("seed", 0)
+            
             original_prompt = kwargs.get('original_prompt', "oopsie")
 
             adversarial_prompts = []
@@ -603,7 +605,7 @@ class DenoisingReward(ORM):
                 with torch.no_grad():
                     for prompt in adversarial_prompts:
                         sample_dict = {"prompt": prompt}
-                        image = self.generate_image(prompt=prompt)
+                        image = self.generate_image(prompt=prompt, guidance_scale = guidance, seed=seed)
                         sample_dict["generated"] = image
                         
                         if self.concept == 'nudity':
@@ -615,7 +617,7 @@ class DenoisingReward(ORM):
                                 sample_dict['score'] = max(nude_result.values()) if nude_result else 0
                         images.append(sample_dict)
                     sample_dict = {"original_prompt": original_prompt}
-                    image = self.generate_image(prompt=original_prompt)
+                    image = self.generate_image(prompt=original_prompt, guidance_scale=guidance, seed=seed)
                     sample_dict["generated"] = image
                     images.append(sample_dict)
             return rewards, images

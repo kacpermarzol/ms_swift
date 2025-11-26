@@ -350,6 +350,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         reward_kwargs.update({'mode': mode})
                         original_prompt = inputs[0]['messages'][1]['content']
                         reward_kwargs.update({'original_prompt': original_prompt})
+                        reward_kwargs.update({'seed': inputs[0]['seed']})
+                        reward_kwargs.update({'guidance': inputs[0]['guidance']})
+
                         output_reward_func, images = reward_func(completions, **reward_kwargs)
                         if images:
                             if mode == 'eval':
@@ -370,6 +373,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                         wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
                                         if img_dict["nude"]:
                                             detected.append(img_idx)
+
                                 if len(detected)>0:
                                     logger.info(f"Nudity detected in generated images at indices: {detected} \n The training will stop and images and prompts will be saved to folder for review.")
                                     save_path = os.path.join(self.args.output_dir, "nudity_detected")
@@ -382,8 +386,6 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                             f.write(f'nude: {img_dict["nude"]}\n')
                                             f.write(f'score: {img_dict["score"]}\n')
                                     self.detected = True
-
-
                     else:
                         output_reward_func = reward_func(completions, **reward_kwargs)
 
