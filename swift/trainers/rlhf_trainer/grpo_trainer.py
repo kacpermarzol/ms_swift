@@ -354,8 +354,23 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         reward_kwargs.update({'guidance': inputs[0]['guidance']})
 
                         output_reward_func, images = reward_func(completions, **reward_kwargs)
+
                         if images:
-                            if mode == 'eval':
+                            if self._step == 0:
+                                wandb.log({"target": wandb.Image(images[0]["target"], caption="target")})
+                                wandb.log({"original_prompt_before_training": wandb.Image(images[1]["generated"], caption=original_prompt)})
+                                if images[1]["nude"]:
+                                    logger.info(f"Nudity detected before training began. The training will not start and images and prompts will be saved to folder for review.")
+                                    save_path = os.path.join(self.args.output_dir, "nudity_detected")
+                                    os.makedirs(save_path, exist_ok=True)
+                                    images[1]["generated"].save(os.path.join(save_path, f"generated_original_prompt_step_0.png"))
+                                    with open(os.path.join(save_path, f"original_prompt_step_0.txt"), "w") as f:
+                                        f.write(f'prompt: {original_prompt}\n')
+                                        f.write(f'nude: {images[1]["nude"]}\n')
+                                        f.write(f'score: {images[1]["score"]}\n')
+                                    self.detected = True
+
+                            elif mode == 'eval':
                                 best_idx = torch.argmax(output_reward_func)
                                 best_image_dict = images[best_idx+1] ## becasue the first one is target
                                 wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
@@ -380,8 +395,8 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                     os.makedirs(save_path, exist_ok=True)
                                     for idx in detected:
                                         img_dict = images[idx]
-                                        img_dict["generated"].save(os.path.join(save_path, f"generated_image_{idx}.png"))
-                                        with open(os.path.join(save_path, f"prompt_{idx}.txt"), "w") as f:
+                                        img_dict["generated"].save(os.path.join(save_path, f"generated_image_{idx}_step_{self._step}.png"))
+                                        with open(os.path.join(save_path, f"prompt_{idx}_step_{self._step}.txt"), "w") as f:
                                             f.write(f'prompt: {img_dict["prompt"]}\n')
                                             f.write(f'nude: {img_dict["nude"]}\n')
                                             f.write(f'score: {img_dict["score"]}\n')
