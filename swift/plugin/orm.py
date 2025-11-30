@@ -523,11 +523,12 @@ class DenoisingReward(ORM):
         scheduler = copy.deepcopy(self.scheduler)
         scheduler.set_timesteps(num_inference_steps)
 
-        gen = torch.Generator(device=self.device)
-        gen.manual_seed(seed)
-
-        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),  generator=gen, device=self.device, dtype=self.unet.dtype)
-        latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype)
+        # gen = torch.Generator(device=self.device)
+        # gen.manual_seed(seed)
+        generator = torch.Generator(device="cpu")
+        generator.manual_seed(seed)
+        latents = torch.randn((1, self.unet.config.in_channels, height // 8, width // 8),  generator=generator, device='cpu', dtype=torch.float32)
+        latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype, device = self.device)
 
         with torch.autocast(device_type=self.device.type, dtype=torch.float16):
             for t in scheduler.timesteps:
