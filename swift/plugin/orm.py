@@ -417,111 +417,371 @@ class SoftOverlong(ORM):
 
 
 
-def preprocess_target_image(image, size = 512, interpolation=InterpolationMode.BICUBIC):
-    transform = transforms.Compose([
-        transforms.Resize(size, interpolation=interpolation),
-        transforms.CenterCrop(size),
-        transforms.ToTensor(),
-        transforms.Normalize([0.5,0.5,0.5], [0.5,0.5,0.5])
-    ])
+# --- imports ---
+import copy
+import re
+import tempfile
+from typing import List, Tuple, Optional, Dict, Any
+from collections.abc import Mapping
 
-    image = transform(image)
-    return image
+import torch
+import torch.nn.functional as F
+from torchvision import transforms
+from torchvision.transforms import InterpolationMode
+import PIL
+from PIL import Image
+
+from diffusers import (
+    AutoencoderKL,
+    UNet2DConditionModel,
+    LMSDiscreteScheduler,
+    DDPMScheduler,
+)
+from transformers import CLIPTokenizer, CLIPTextModel
+
+# Assume ORM, detectNudeClasses, if_nude are defined elsewhere
+
+
+# --- helpers ---
+
+def _randn_like(x: torch.Tensor, *, generator: Optional[torch.Generator] = None) -> torch.Tensor:
+    """randn_like with optional generator support, compatible with older PyTorch versions."""
+    return torch.randn(x.shape, dtype=x.dtype, device=x.device, generator=generator)
+
+
+def _pad_to_multiple_of_8(t: torch.Tensor) -> torch.Tensor:
+    """
+    t: [B, C, H, W]; symmetric reflect padding to nearest multiple of 8 in H and W.
+    """
+    _, _, h, w = t.shape
+    pad_h = (8 - (h % 8)) % 8
+    pad_w = (8 - (w % 8)) % 8
+    pad = (pad_w // 2, pad_w - pad_w // 2, pad_h // 2, pad_h - pad_h // 2)  # (left, right, top, bottom)
+    return F.pad(t, pad, mode="reflect")
+
+
+@torch.no_grad()
+def preprocess_target_image(
+    image: Image.Image,
+    device: torch.device,
+    resolution: Optional[int] = None,
+) -> torch.Tensor:
+    """
+    PIL.Image -> tensor [1,3,H,W] in [-1,1].
+
+    If resolution is None:
+        - No resize/crop, only ToTensor + Normalize + pad-to-multiple-of-8.
+    If resolution is int:
+        - Resize + center crop to resolution x resolution, ToTensor + Normalize.
+    """
+    if resolution is None:
+        pre = transforms.Compose([
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+        ])
+        img = image.convert("RGB")
+        t = pre(img).unsqueeze(0).to(device=device, dtype=torch.float32)
+        return _pad_to_multiple_of_8(t)
+
+    pre = transforms.Compose([
+        transforms.Resize(resolution, interpolation=InterpolationMode.BILINEAR),
+        transforms.CenterCrop(resolution),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]),
+    ])
+    img = image.convert("RGB")
+    t = pre(img).unsqueeze(0).to(device=device, dtype=torch.float32)
+    return t
+
+
+# --- hybrid DenoisingReward ---
 
 class DenoisingReward(ORM):
-    def __init__(self, base_model_name: str, unlearned_unet_path: str, device: str = "cuda", num_train_epochs = 1001, concept = 'nudity'):
+    """
+    Hybrid version:
+
+    - External API compatible with Kacper's DenoisingReward:
+        __init__(base_model_name, unlearned_unet_path, device="cuda",
+                 num_train_epochs=1001, concept="nudity", ...)
+        __call__(completions, target_img=[...], step=..., mode=..., guidance=..., seed=..., original_prompt=...)
+
+    - Reward logic is your original:
+        For each image/prompt:
+            reward = mean_k( MSE_uncond(t_k) - MSE_cond(t_k) )
+        where MSE is between UNet prediction and DDPM target (epsilon or velocity),
+        using a DDPMScheduler for forward noising, averaged over K timesteps.
+
+    - Uses:
+        * cached unconditional text embeddings,
+        * separate DDPM train scheduler and LMS sampler,
+        * batched CFG in generate_image,
+        * concept classifier (e.g. nudity) on visualization outputs.
+    """
+
+    def __init__(
+        self,
+        base_model_name: str,
+        unlearned_unet_path: str,
+        device: str = "cuda",
+        num_train_epochs: int = 1001,
+        concept: str = "nudity",
+        *,
+        input_resolution: Optional[int] = None,
+        compute_dtype: torch.dtype = torch.float16,
+        reward_num_timesteps: int = 12,
+        seed: int = 1234,
+    ):
         self.device = torch.device(device)
-        self.image_cache = {}
+        self.image_cache: Dict[str, torch.Tensor] = {}
+
+        self.input_resolution = input_resolution
+        self.compute_dtype = compute_dtype
+        self.reward_num_timesteps = max(1, int(reward_num_timesteps))
+        self.seed = int(seed)
+
+        self.concept = concept
+        self.total_steps = int(num_train_epochs)  # kept for compatibility, if needed externally
 
         try:
-            dtype = torch.float16
+            # --- core SD components ---
+            print(f"[DenoisingReward] base_model={base_model_name}")
+            print(f"[DenoisingReward] unlearned_unet_path={unlearned_unet_path}")
 
-            self.vae = AutoencoderKL.from_pretrained(base_model_name, subfolder="vae").to(dtype=dtype, device=self.device)
+            # VAE
+            self.vae = AutoencoderKL.from_pretrained(base_model_name, subfolder="vae").to(device=self.device)
+            self.latent_scaling: float = float(getattr(self.vae.config, "scaling_factor", 0.18215))
+
+            # Text components
             self.tokenizer = CLIPTokenizer.from_pretrained(base_model_name, subfolder="tokenizer")
-            self.text_encoder = CLIPTextModel.from_pretrained(base_model_name, subfolder="text_encoder").to(dtype=dtype, device=self.device)
-            # self.custom_text_encoder = CustomTextEncoder(self.text_encoder).to(self.device)
-            # self.all_embeddings = self.custom_text_encoder.get_all_embedding().unsqueeze(0)
+            self.text_encoder = CLIPTextModel.from_pretrained(base_model_name, subfolder="text_encoder").to(
+                dtype=self.compute_dtype,
+                device=self.device,
+            )
 
+            # UNet
             unet_config = UNet2DConditionModel.load_config(base_model_name, subfolder="unet")
             with torch.no_grad():
-                self.unet = UNet2DConditionModel.from_config(unet_config).to(dtype=dtype)
+                self.unet = UNet2DConditionModel.from_config(unet_config).to(
+                    dtype=self.compute_dtype,
+                    device=self.device,
+                )
 
+            # Train-time scheduler: DDPM for forward noising and reward
+            self.train_scheduler = DDPMScheduler(
+                beta_start=0.00085,
+                beta_end=0.012,
+                beta_schedule="scaled_linear",
+                num_train_timesteps=1000,
+                prediction_type="epsilon",
+            )
+            if isinstance(self.train_scheduler.config, Mapping):
+                self.prediction_type = self.train_scheduler.config.get("prediction_type", "epsilon")
+                num_train_timesteps = self.train_scheduler.config.get("num_train_timesteps", 1000)
+            else:
+                self.prediction_type = getattr(self.train_scheduler.config, "prediction_type", "epsilon")
+                num_train_timesteps = getattr(self.train_scheduler.config, "num_train_timesteps", 1000)
+
+            # Sampling scheduler: LMS for generation (same attribute name as Kacper)
             self.scheduler = LMSDiscreteScheduler(
                 beta_start=0.00085,
                 beta_end=0.012,
                 beta_schedule="scaled_linear",
-                num_train_timesteps=1000
+                num_train_timesteps=num_train_timesteps,
+            )
+            # Alias for clarity (not strictly required)
+            self.sample_scheduler = self.scheduler
+
+            # For compatibility with Kacper's attributes
+            self.alphas_cumprod = self.scheduler.alphas_cumprod.to(device=self.device, dtype=self.unet.dtype)
+            self.num_steps = int(self.scheduler.config.num_train_timesteps)
+            self.start_exp = 0.2
+            self.end_exp = 1.0
+
+            # Load unlearned UNet weights
+            state_dict = torch.load(unlearned_unet_path, map_location="cpu")
+            if "state_dict" in state_dict:
+                state_dict = state_dict["state_dict"]
+            elif "model" in state_dict:
+                state_dict = state_dict["model"]
+            state_dict = {k.replace("module.", ""): v for k, v in state_dict.items()}
+            self.unet.load_state_dict(state_dict, strict=True)
+
+            # Cache unconditional embeddings once (for reward and generation)
+            uncond_ids = self.tokenizer(
+                [""],
+                padding="max_length",
+                max_length=self.tokenizer.model_max_length,
+                return_tensors="pt",
+            ).input_ids.to(self.device)
+            self.uncond_embeddings = self.text_encoder(input_ids=uncond_ids)[0].to(
+                dtype=self.compute_dtype,
+                device=self.device,
             )
 
-            self.alphas_cumprod = self.scheduler.alphas_cumprod.to(device=self.device, dtype=self.unet.dtype)
+            # Freeze everything
+            self.vae.eval().requires_grad_(False)
+            self.text_encoder.eval().requires_grad_(False)
+            self.unet.eval().requires_grad_(False)
 
-            state_dict = torch.load(unlearned_unet_path, map_location='cpu')
-
-            if 'state_dict' in state_dict:
-                state_dict = state_dict['state_dict']
-            elif 'model' in state_dict:
-                state_dict = state_dict['model']
-
-            state_dict = {k.replace('module.', ''): v for k, v in state_dict.items()}
-
-            self.unet.load_state_dict(state_dict)
-            self.unet = self.unet.to(self.device)
-
-            self.vae.eval()
-            self.text_encoder.eval()
-            self.unet.eval()
-            self.vae.requires_grad_(False)
-            self.text_encoder.requires_grad_(False)
-            self.unet.requires_grad_(False)
-            # self.tokenizer.eval()
-            # self.tokenizer.requires_grad_(False)
-
-            self.seed = 1234
-
-            # Scheduler parameters for timestep sampling
-            self.total_steps = num_train_epochs
-            self.num_steps = self.scheduler.config.num_train_timesteps
-            self.start_exp = 0.2
-            self.end_exp = 1.0  
-
-            # Image generation parameters
-            uncond_input_ids = self.tokenizer([""], padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt").input_ids.to(self.device)
-            self.uncond_embeddings = self.text_encoder(input_ids=uncond_input_ids)[0]
-            self.concept = concept
-
-            print(f"[DenoisingReward] Successfully loaded unlearned UNet weights.")
+            print(f"[DenoisingReward] Loaded UNet. prediction_type(train_scheduler)={self.prediction_type}")
+            print(f"[DenoisingReward] VAE scaling_factor={self.latent_scaling:.6f}")
+            print(f"[DenoisingReward] Successfully initialized hybrid DenoisingReward.")
         except Exception as e:
             print(f"[DenoisingReward] Error during initialization: {e}")
             raise
 
-    def _get_cached_image_latent(self, image_path):
+    # --- optional: keep Kacper's timestep sampler for compatibility, though not used in reward ---
+
+    def sample_timesteps(self, global_step: torch.Tensor) -> torch.Tensor:
+        """
+        Kacper's original timestep sampling function, kept for compatibility
+        if something external depends on it. Not used in the reward logic.
+        """
+        progress = (global_step / self.total_steps).clamp(0.0, 1.0)
+        exponent = self.start_exp + (self.end_exp - self.start_exp) * progress
+        max_t = ((0.05 + 0.95 * progress) * self.num_steps).clamp(min=1).long()
+        u = torch.rand(1, device=self.device)
+        return (u.pow(exponent) * max_t).long()
+
+    # --- caching latents ---
+
+    @torch.no_grad()
+    def _get_cached_image_latent(self, image_path: str) -> Optional[torch.Tensor]:
         if image_path in self.image_cache:
             return self.image_cache[image_path]
 
         print(f"[DenoisingReward] Caching image: {image_path}")
         try:
             image_pil = PIL.Image.open(image_path).convert("RGB")
-            target_tensor = preprocess_target_image(image_pil).unsqueeze(0).to(self.device, dtype=self.vae.dtype)
-            with torch.no_grad():
-                clean_latents = self.vae.encode(target_tensor).latent_dist.mean
-                clean_latents *= 0.18215
-            self.image_cache[image_path] = clean_latents
-            return clean_latents
-
         except Exception as e:
-            print(f"[DenoisingReward] ERROR loading/processing image {image_path}: {e}")
+            print(f"[DenoisingReward] ERROR opening image {image_path}: {e}")
             return None
 
-    def generate_image(self, prompt, height=512, width=512, num_inference_steps=100, guidance_scale=7.5, seed=0):
-        input_ids = self.tokenizer(prompt, padding="max_length", max_length=self.tokenizer.model_max_length, return_tensors="pt", truncation=True).input_ids.to(self.device)
-        text_embeddings = self.text_encoder(input_ids=input_ids)[0]
-        
-        uncond_embeddings = self.uncond_embeddings
+        try:
+            target_tensor = preprocess_target_image(
+                image_pil,
+                device=self.device,
+                resolution=self.input_resolution,
+            )  # [1,3,H,W] float32 in [-1,1]
+            with torch.no_grad():
+                posterior = self.vae.encode(target_tensor)
+                clean_latents = posterior.latent_dist.mean  # [1,4,H/8,W/8]
+                clean_latents = clean_latents * self.latent_scaling
+                clean_latents = clean_latents.to(device=self.device, dtype=self.compute_dtype)
+            self.image_cache[image_path] = clean_latents
+            return clean_latents
+        except Exception as e:
+            print(f"[DenoisingReward] ERROR processing image {image_path}: {e}")
+            return None
 
-        cond_embeds = torch.cat([uncond_embeddings, text_embeddings], dim=0).to(self.unet.dtype)
+    # --- reward computation for a single prompt and image ---
 
+    @torch.no_grad()
+    def _reward_for_prompt(
+        self,
+        clean_latents: torch.Tensor,
+        adversarial_prompt: str,
+        *,
+        t_list: torch.Tensor,                    # [K] long
+        noise_list: List[torch.Tensor],          # len-K list of [1,4,H/8,W/8]
+        uncond_losses: torch.Tensor,             # [K] float MSE_uncond for this image
+    ) -> float:
+        """
+        Reward for a single prompt and image:
+            mean_k( MSE_uncond(t_k) - MSE_cond(t_k) )
+
+        MSE is between UNet prediction and the DDPM target (epsilon or velocity),
+        under self.train_scheduler noising.
+        """
+
+        # Tokenize and encode conditional prompt
+        ids_cond = self.tokenizer(
+            adversarial_prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(self.device)
+
+        enc_cond = self.text_encoder(input_ids=ids_cond)[0].to(
+            dtype=self.compute_dtype,
+            device=self.device,
+        )
+
+        pred_type = self.prediction_type
+        K = int(self.reward_num_timesteps)
+        assert t_list.shape[0] == K and len(noise_list) == K
+        assert uncond_losses.shape[0] == K
+
+        improvements: List[torch.Tensor] = []
+
+        for k in range(K):
+            t = t_list[k].view(1)        # [1]
+            noise = noise_list[k]        # [1,4,H/8,W/8]
+            noisy = self.train_scheduler.add_noise(clean_latents, noise, t)
+
+            # Conditional UNet forward
+            pred_c = self.unet(noisy, t, encoder_hidden_states=enc_cond).sample
+
+            # Compute DDPM target
+            if pred_type == "epsilon":
+                target = noise
+            elif pred_type in ("v_prediction", "v-prediction", "v"):
+                target = self.train_scheduler.get_velocity(clean_latents, noise, t)
+            else:
+                target = noise
+
+            # MSE in float32 for numerical stability
+            l_c = F.mse_loss(pred_c.float(), target.float(), reduction="mean")
+            l_u = uncond_losses[k]
+
+            improvements.append((l_u - l_c).float())  # >0 means conditional is better than unconditional
+
+        mean_improvement = torch.stack(improvements).float().mean()
+        return float(mean_improvement.item())
+
+    # --- image generation with batched CFG ---
+
+    @torch.no_grad()
+    def generate_image(
+        self,
+        prompt: str,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 100,
+        guidance_scale: float = 7.5,
+        seed: Optional[int] = None,
+    ) -> Image.Image:
+        """
+        Image generation compatible with Kacper's API, but using batched
+        classifier-free guidance (uncond + cond in one UNet pass) and LMS sampling.
+        """
+        if seed is None:
+            seed = self.seed
+
+        # Text embeddings
+        input_ids = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(self.device)
+
+        text_embeddings = self.text_encoder(input_ids=input_ids)[0].to(
+            dtype=self.compute_dtype,
+            device=self.device,
+        )
+
+        # Concatenate uncond + cond for batched CFG
+        cond_embeds = torch.cat(
+            [self.uncond_embeddings, text_embeddings],
+            dim=0,
+        ).to(dtype=self.compute_dtype, device=self.device)
+
+        # Scheduler copy
         scheduler = copy.deepcopy(self.scheduler)
-        scheduler.set_timesteps(num_inference_steps)
+        scheduler.set_timesteps(num_inference_steps, device=self.device)
 
         # gen = torch.Generator(device=self.device)
         # gen.manual_seed(seed)
@@ -532,19 +792,28 @@ class DenoisingReward(ORM):
 
         with torch.autocast(device_type=self.device.type, dtype=torch.float16):
             for t in scheduler.timesteps:
-                latent_in = latents.expand(2, -1, -1, -1)
-                latent_in = scheduler.scale_model_input(latent_in, t)
-                noise_pred = self.unet(latent_in, t, cond_embeds).sample
-                noise_uncond, noise_text = noise_pred.chunk(2)
-                noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
-                latents = scheduler.step(noise_pred, t, latents).prev_sample
+                latent_in = scheduler.scale_model_input(latents, t)
+                latent_batch = latent_in.expand(2, -1, -1, -1)  # [2,C,H,W]
 
-        latents = latents / 0.18215
-        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
-            image = self.vae.decode(latents).sample
-        
+                noise_pred = self.unet(
+                    latent_batch,
+                    t,
+                    encoder_hidden_states=cond_embeds,
+                ).sample
+
+                noise_uncond, noise_text = noise_pred.chunk(2)
+                noise_pred_guided = noise_uncond + guidance_scale * (noise_text - noise_uncond)
+
+                latents = scheduler.step(noise_pred_guided, t, latents).prev_sample
+
+            # Decode
+            latents_dec = latents / self.latent_scaling
+            image = self.vae.decode(latents_dec.to(dtype=self.compute_dtype)).sample
+
+        # Convert to uint8 PIL image
+        image = image.float()
         image = (image / 2 + 0.5).clamp(0, 1)
-        image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).astype("uint8")
+        image_np = (image[0].permute(1, 2, 0).cpu().numpy() * 255).round().astype("uint8")
         return PIL.Image.fromarray(image_np)
 
     # OLD
@@ -653,7 +922,27 @@ class DenoisingReward(ORM):
                             sample_dict['success'] = if_nude(nude_result, threshold=0.45)
                             sample_dict['score'] = max(nude_result.values()) if nude_result else 0
                     images.append(sample_dict)
-            return rewards, images
+                except Exception as e:
+                    print(f"[DenoisingReward] ERROR generating sample for prompt: {e}")
+
+            # Baseline original prompt sample
+            try:
+                base_sample: Dict[str, Any] = {"original_prompt": original_prompt}
+                image = self.generate_image(
+                    prompt=original_prompt,
+                    height=512,
+                    width=512,
+                    num_inference_steps=100,
+                    guidance_scale=guidance_scale,
+                    seed=viz_seed,
+                )
+                base_sample["generated"] = image
+                images.append(base_sample)
+            except Exception as e:
+                print(f"[DenoisingReward] ERROR generating original_prompt sample: {e}")
+
+        return rewards, images
+
 
 orms = {
     'toolbench': ReactORM,

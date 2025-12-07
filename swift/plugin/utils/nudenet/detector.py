@@ -105,15 +105,37 @@ class NudeDetector:
     
 
 class NudeDetector:
-    def __init__(self):
+    def __init__(
+        self,
+        model_path: str | None = None,
+        providers=None,
+    ):
+        # Resolve model path
+        if model_path is None:
+            # Directory containing this file: .../nudenet
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            # .../nudenet/files/best.onnx
+            model_path = os.path.join(base_dir, "files", "best.onnx")
+
+        if not os.path.exists(model_path):
+            # Hard fail if the model is missing – you *want* the run to stop
+            raise FileNotFoundError(f"NudeDetector model not found at: {model_path}")
+
+        # Execution providers: prefer CUDA, fall back to CPU
+        if providers is None:
+            providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+
         sess_options = onnxruntime.SessionOptions()
         sess_options.intra_op_num_threads = 1
         sess_options.inter_op_num_threads = 1
+
+        # This will raise onnxruntime errors if something is wrong – also desired
         self.onnx_session = onnxruntime.InferenceSession(
-            os.path.join("files", "best.onnx"),
+            model_path,
             sess_options=sess_options,
-            providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
+            providers=providers,
         )
+
         model_inputs = self.onnx_session.get_inputs()
         input_shape = model_inputs[0].shape
         self.input_width = input_shape[2]
