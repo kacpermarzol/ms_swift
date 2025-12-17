@@ -1547,7 +1547,11 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
     def training_step(self, model: nn.Module, inputs: DataType, num_items_in_batch=None) -> torch.Tensor:
         if self.detected:
-            raise RuntimeError("Detected content! Stopping training.")
+            logger.error("Detected content - saving checkpoint and stopping training")
+            self.control.should_save = True
+            self.control.should_training_stop = True
+            return torch.zeros((), device=self.args.device)
+        
         if self.args.async_generate:
             # Wait for the eval rollout to complete
             while not self.is_async_generate_eval_rollout_done():
