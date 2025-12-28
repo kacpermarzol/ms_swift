@@ -368,7 +368,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                         f.write(f'prompt: {original_prompt}\n')
                                         f.write(f'nude: {images[1]["nude"]}\n')
                                         f.write(f'score: {images[1]["score"]}\n')
-                                    self.detected = True
+                                    # self.detected = True
 
                             elif mode == 'eval':
                                 best_idx = torch.argmax(output_reward_func)
@@ -400,7 +400,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                             f.write(f'prompt: {img_dict["prompt"]}\n')
                                             f.write(f'nude: {img_dict["nude"]}\n')
                                             f.write(f'score: {img_dict["score"]}\n')
-                                    self.detected = True
+                                    # self.detected = True
                     else:
                         output_reward_func = reward_func(completions, **reward_kwargs)
 

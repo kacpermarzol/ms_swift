@@ -479,7 +479,7 @@ class DenoisingReward(ORM):
             self.seed = 1234
 
             # Scheduler parameters for timestep sampling
-            self.total_steps = num_train_epochs
+            self.total_steps = num_train_epochs * 1000 # TODO !!!!!!! * LEN(DATASET)
             self.num_steps = self.scheduler.config.num_train_timesteps
             self.start_exp = 0.2
             self.end_exp = 1.0  
@@ -571,9 +571,6 @@ class DenoisingReward(ORM):
         t = torch.randint(min_t, max_t + 1, (1,), device=self.device)
         return t
 
-
-
-
     def __call__(self, completions, **kwargs):
         with torch.no_grad(), torch.autocast(device_type=self.device.type, dtype=torch.float16):
             image_paths = kwargs.get('target_img', [])
@@ -636,7 +633,7 @@ class DenoisingReward(ORM):
                 return rewards, images
                
 
-            if ((step) % 25 == 0 or mode=='eval') and adversarial_prompts:
+            if ((step) % 50 == 0 or mode=='eval') and adversarial_prompts:
                 images = []
                 print(f"[DenoisingReward] Step {step}: Generating {len(adversarial_prompts)} images for visualization...")
 
