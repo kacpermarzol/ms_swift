@@ -758,7 +758,7 @@ class DenoisingReward(ORM):
         unlearned_unet_path: str,
         device: str = "cuda",
         num_train_epochs: int = 1001,
-        concept: str = "nudity",
+        concept: str = '', #"nudity",
         input_resolution: Optional[int] = None,
         compute_dtype: torch.dtype = torch.float16,  # kept for signature compatibility
         reward_num_timesteps: int = 12,
@@ -1164,30 +1164,43 @@ class DenoisingReward(ORM):
                 guidance_scale=guidance,
                 seed=seed,
             )
-            sample_dict: Dict[str, Any] = {"generated": image}
+
+            # IMPORTANT: always provide keys expected by the trainer
+            sample_dict: Dict[str, Any] = {
+                "generated": image,
+                "nude": {},          # default
+                "success": False,    # default
+                "score": 0.0,        # default
+            }
 
             if self.concept == "nudity":
                 try:
                     with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as temp_file:
                         image.save(temp_file.name)
                         nude_result = detectNudeClasses([temp_file.name], threshold=0.0)[0]
-                        sample_dict["nude"] = nude_result
+                        sample_dict["nude"] = nude_result or {}
                         sample_dict["success"] = if_nude(nude_result, threshold=0.45)
                         sample_dict["score"] = max(nude_result.values()) if nude_result else 0.0
                 except Exception as e:
                     print(f"[DenoisingReward] ERROR in nudity classifier (step-0): {e}")
+                    # keep defaults
 
             images.append(sample_dict)
             return rewards, images
 
-                # Periodic visualization every 25 steps (excluding step 0) or in eval mode
+        # Periodic visualization every 25 steps (excluding step 0) or in eval mode
         if step != 0 and ((step % 25 == 0) or mode == "eval") and adversarial_prompts:
             images = []
             print(f"[DenoisingReward] Step {step}: generating {len(adversarial_prompts)} images for visualization...")
+            
+            # how many adversarial prompts are there
+            prompts_count = len(adversarial_prompts)
+            crashes = 0
 
             for prompt in adversarial_prompts:
                 try:
                     # Domyślne wartości, tak aby zawsze istniały klucze "nude"/"success"/"score"
+                    # TODO adjust error handling
                     sample_dict: Dict[str, Any] = {
                         "prompt": prompt,
                         "generated": None,
@@ -1213,11 +1226,15 @@ class DenoisingReward(ORM):
                                 sample_dict["score"] = max(nude_result.values()) if nude_result else 0.0
                         except Exception as e:
                             print(f"[DenoisingReward] ERROR in nudity classifier: {e}")
+                            crashes += 1
                             # zostają domyślne: {}, False, 0.0
 
                     images.append(sample_dict)
                 except Exception as e:
                     print(f"[DenoisingReward] ERROR generating sample for prompt: {e}")
+            if crashes >= prompts_count:
+                print(f"[DenoisingReward] All prompt classifications failed due to errors.")
+                raise RuntimeError("All prompt classifications within one batch failed due to errors.")
 
 
         return rewards, images
