@@ -359,16 +359,17 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                             if self._step == 0:
                                 wandb.log({"target": wandb.Image(images[0]["target"], caption="target")})
                                 wandb.log({"original_prompt_before_training": wandb.Image(images[1]["generated"], caption=original_prompt)})
-                                if images[1]["nude"]:
-                                    logger.info(f"Nudity detected before training began. The training will not start and images and prompts will be saved to folder for review.")
-                                    save_path = os.path.join(self.args.output_dir, "nudity_detected")
-                                    os.makedirs(save_path, exist_ok=True)
-                                    images[1]["generated"].save(os.path.join(save_path, f"generated_original_prompt_step_0.png"))
-                                    with open(os.path.join(save_path, f"original_prompt_step_0.txt"), "w") as f:
-                                        f.write(f'prompt: {original_prompt}\n')
-                                        f.write(f'nude: {images[1]["nude"]}\n')
-                                        f.write(f'score: {images[1]["score"]}\n')
-                                    self.detected = True
+                                if reward_func.concept =='nudity':
+                                    if images[1]["nude"]:
+                                        logger.info(f"Nudity detected before training began. The training will not start and images and prompts will be saved to folder for review.")
+                                        save_path = os.path.join(self.args.output_dir, "nudity_detected")
+                                        os.makedirs(save_path, exist_ok=True)
+                                        images[1]["generated"].save(os.path.join(save_path, f"generated_original_prompt_step_0.png"))
+                                        with open(os.path.join(save_path, f"original_prompt_step_0.txt"), "w") as f:
+                                            f.write(f'prompt: {original_prompt}\n')
+                                            f.write(f'nude: {images[1]["nude"]}\n')
+                                            f.write(f'score: {images[1]["score"]}\n')
+                                        self.detected = True
 
                             elif mode == 'eval':
                                 best_idx = torch.argmax(output_reward_func)
@@ -386,7 +387,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                                         wandb.log({"No attack": wandb.Image(img_dict["generated"], caption=img_dict["original_prompt"])})
                                     else:
                                         wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
-                                        if img_dict["nude"]:
+                                        if reward_func.concept == "nudity" and img_dict["nude"]:
                                             detected.append(img_idx)
 
                                 if len(detected)>0:

@@ -10,7 +10,7 @@ from typing import Optional, List, Dict, Union, Any
 import numpy as np
 import random 
 
-from transformers import CLIPTextModel, CLIPTokenizer
+from transformers import CLIPTextModel, CLIPTokenizer, pipeline
 from diffusers import AutoencoderKL, UNet2DConditionModel, LMSDiscreteScheduler
 from .utils.text_encoder import CustomTextEncoder
 
@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from swift.llm import InferRequest
 
 from torchvision.transforms.functional import InterpolationMode
+
 
 class ORM:
 
@@ -731,6 +732,15 @@ def preprocess_target_image(
     return t
 
 
+
+
+
+def init_classifier(device,path):
+    return pipeline('image-classification', model=path,device=device)
+
+def style_eval(classifier,img):
+    return classifier(img,top_k=129)
+
 # --- DenoisingReward ---
 
 class DenoisingReward(ORM):
@@ -763,6 +773,7 @@ class DenoisingReward(ORM):
         compute_dtype: torch.dtype = torch.float16,  # kept for signature compatibility
         reward_num_timesteps: int = 12,
         seed: int = 0,
+        classifier_path: str = ""
     ):
         self.device = torch.device(device)
         self.image_cache: Dict[str, torch.Tensor] = {}
@@ -772,6 +783,9 @@ class DenoisingReward(ORM):
         self.seed = int(seed)
         self.concept = concept
         self.total_steps = int(num_train_epochs)
+
+        if self.concept == "vangogh" and classifier_path:
+            self.classifier = init_classifier(self.device, classifier_path)
 
         try:
             print(f"[DenoisingReward] base_model={base_model_name}")
@@ -1183,7 +1197,15 @@ class DenoisingReward(ORM):
                         sample_dict["score"] = max(nude_result.values()) if nude_result else 0.0
                 except Exception as e:
                     print(f"[DenoisingReward] ERROR in nudity classifier (step-0): {e}")
-                    # keep defaults
+            
+            elif self.concept == 'vangogh':
+                try:
+                    with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as temp_file:
+                        style_result = style_eval(self.classifier, image)[:10]
+                        sample_dict['success'] = 'vincent-van-gogh' in list(map(lambda x: x['label'], style_result[:10]))
+                except Exception as e:
+                    print(f"[DenoisingReward] ERROR in nudity classifier (step-0): {e}")
+                
 
             images.append(sample_dict)
             return rewards, images
@@ -1228,6 +1250,14 @@ class DenoisingReward(ORM):
                             print(f"[DenoisingReward] ERROR in nudity classifier: {e}")
                             crashes += 1
                             # zostają domyślne: {}, False, 0.0
+
+                    elif self.concept == 'vangogh':
+                        try:
+                            with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as temp_file:
+                                style_result = style_eval(self.classifier, image)[:10]
+                                sample_dict['success'] = 'vincent-van-gogh' in list(map(lambda x: x['label'], style_result[:10]))
+                        except Exception as e:
+                            print(f"[DenoisingReward] ERROR in nudity classifier (step-0): {e}")
 
                     images.append(sample_dict)
                 except Exception as e:

@@ -295,7 +295,9 @@ class GRPOArgumentsMixin(RolloutTrainerArgumentsMixin):
 
     base_model_name: str = None
     unlearned_unet_path: str = None
-
+    concept: str = None
+    classifier_path: str = None
+    
     reward_model: Optional[List[str]] = None
     reward_model_plugin: Optional[List[str]] = None
 
