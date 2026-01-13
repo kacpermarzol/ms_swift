@@ -859,16 +859,17 @@ class DenoisingReward(ORM):
 
     # --- optional timestep sampler from original implementation (not used in reward) ---
 
-    def sample_timesteps(self, global_step: torch.Tensor) -> torch.Tensor:
-        """
-        Progress-dependent timestep sampler retained for compatibility with external code.
-        Not used in the current reward computation.
-        """
-        progress = (global_step / self.total_steps).clamp(0.0, 1.0)
-        exponent = self.start_exp + (self.end_exp - self.start_exp) * progress
-        max_t = ((0.05 + 0.95 * progress) * self.num_steps).clamp(min=1).long()
-        u = torch.rand(1, device=self.device)
-        return (u.pow(exponent) * max_t).long()
+    # def sample_timesteps(self, global_step: torch.Tensor) -> torch.Tensor:
+    #     """
+    #     Progress-dependent timestep sampler retained for compatibility with external code.
+    #     Not used in the current reward computation.
+    #     """
+    #     progress = (global_step / self.total_steps).clamp(0.0, 1.0)
+    #     exponent = self.start_exp + (self.end_exp - self.start_exp) * progress
+    #     max_t = ((0.05 + 0.95 * progress) * self.num_steps).clamp(min=1).long()
+    #     u = torch.rand(1, device=self.device)
+    #     return (u.pow(exponent) * max_t).long()
+
 
     # --- caching latents ---
 
@@ -1019,6 +1020,15 @@ class DenoisingReward(ORM):
 
     # --- main call ---
 
+    def sample_timesteps(self, global_step, size):
+        progress = (global_step / self.total_steps).clamp(0.0, 1.0)
+        min_t = int((1 - progress) * (self.num_steps - 1))
+        max_t = self.num_steps - 1
+        min_t = max(0, min_t)
+        min_t = min(min_t, max_t)
+        t = torch.randint(min_t, max_t + 1, (size,), device=self.device)
+        return t
+
     @torch.no_grad()
     def __call__(self, completions: List[str], **kwargs) -> Tuple[List[float], Optional[List[Dict[str, Any]]]]:
         """
@@ -1051,8 +1061,8 @@ class DenoisingReward(ORM):
             adversarial_prompts.append(adversarial_prompt[:1024])
 
         # RNG for reward (independent from visualization RNG)
-        gen = torch.Generator(device=self.device)
-        gen.manual_seed(self.seed + max(0, step))
+        # gen = torch.Generator(device=self.device)
+        # gen.manual_seed(self.seed + max(0, step))
 
         # Cache latents per image path
         latents_per_img: Dict[str, Optional[torch.Tensor]] = {}
@@ -1062,21 +1072,24 @@ class DenoisingReward(ORM):
 
         # Sample K timesteps once per call (uniform over full LMS range)
         K = int(self.reward_num_timesteps)
-        T = int(self.num_steps)
-        t_list = torch.randint(
-            low=0,
-            high=T,
-            size=(K,),
-            device=self.device,
-            generator=gen,
-        ).long()
+        # T = int(self.num_steps)
+        
+        # t_list = torch.randint(
+        #     low=0,
+        #     high=T,
+        #     size=(K,),
+        #     device=self.device,
+        #     generator=gen,
+        # ).long()
+
+        t_list = self.sample_timesteps(torch.tensor(step), K)
 
         # Pre-sample noise per image and timestep
         noise_bank: Dict[str, List[torch.Tensor]] = {}
         for img_path, latents in latents_per_img.items():
             if latents is None:
                 continue
-            noise_bank[img_path] = [_randn_like(latents, generator=gen) for _ in range(K)]
+            noise_bank[img_path] = [_randn_like(latents) for _ in range(K)]
 
         # Precompute unconditional losses per image and timestep
         enc_uncond = self.uncond_embeddings
