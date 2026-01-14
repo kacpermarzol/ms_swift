@@ -50,6 +50,21 @@ if is_wandb_available():
 if is_swanlab_available():
     import swanlab
 
+import json
+import os
+
+def _concept_triggered(img_dict: dict) -> bool:
+    # Single, consistent stop signal for any concept (nudity, church, etc.)
+    return bool(img_dict.get("success", False))
+
+def _concept_name(img_dict: dict) -> str:
+    return str(img_dict.get("concept", "unknown"))
+
+def _concept_details(img_dict: dict):
+    # Works with the refactored DenoisingReward that returns concept_details
+    return img_dict.get("concept_details", img_dict.get("details", {}))
+
+
 
 class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
     executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
@@ -344,7 +359,7 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                   
                     images = None
 
-                    if reward_func_name == "DenoisingReward":
+                    if reward_func_name == "DenoisingReward" or "DenoisingReward" in reward_func_name:
                         reward_kwargs.update({'step': self._step})
                         mode = 'train' if self.model.training else 'eval'
                         reward_kwargs.update({'mode': mode})
@@ -359,47 +374,102 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                             if self._step == 0:
                                 wandb.log({"target": wandb.Image(images[0]["target"], caption="target")})
                                 wandb.log({"original_prompt_before_training": wandb.Image(images[1]["generated"], caption=original_prompt)})
-                                if images[1]["nude"]:
-                                    logger.info(f"Nudity detected before training began. The training will not start and images and prompts will be saved to folder for review.")
-                                    save_path = os.path.join(self.args.output_dir, "nudity_detected")
+
+                                # OLD:
+                                # if images[1]["nude"]:
+                                # NEW:
+                                if _concept_triggered(images[1]):
+                                    concept = _concept_name(images[1])
+                                    logger.info(
+                                        f"Concept detected before training began (concept={concept}). "
+                                        f"Training will not start; artifacts will be saved for review."
+                                    )
+
+                                    save_path = os.path.join(self.args.output_dir, "concept_detected")
                                     os.makedirs(save_path, exist_ok=True)
-                                    images[1]["generated"].save(os.path.join(save_path, f"generated_original_prompt_step_0.png"))
-                                    with open(os.path.join(save_path, f"original_prompt_step_0.txt"), "w") as f:
-                                        f.write(f'prompt: {original_prompt}\n')
-                                        f.write(f'nude: {images[1]["nude"]}\n')
-                                        f.write(f'score: {images[1]["score"]}\n')
+
+                                    images[1]["generated"].save(
+                                        os.path.join(save_path, f"generated_original_prompt_step_0.png")
+                                    )
+
+                                    with open(os.path.join(save_path, "original_prompt_step_0.json"), "w") as f:
+                                        json.dump(
+                                            {
+                                                "original_prompt": original_prompt,
+                                                "concept": concept,
+                                                "concept_type": images[1].get("concept_type", None),
+                                                "success": images[1].get("success", False),
+                                                "score": images[1].get("score", 0.0),
+                                                "details": _concept_details(images[1]),
+                                            },
+                                            f,
+                                            indent=2,
+                                        )
+
                                     self.detected = True
 
-                            elif mode == 'eval':
+                            elif mode == "eval":
                                 best_idx = torch.argmax(output_reward_func)
-                                best_image_dict = images[best_idx+1] ## becasue the first one is target
+                                best_image_dict = images[best_idx + 1]  # because first is target
                                 wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
                                 wandb.log({f"EVAL_best_image:": wandb.Image(best_image_dict["generated"], caption=best_image_dict["prompt"])})
                                 original_prompt_dict = images[-1]
                                 wandb.log({"EVAL_No attack": wandb.Image(original_prompt_dict["generated"], caption=original_prompt_dict["original_prompt"])})
+
                             else:
                                 detected = []
+
                                 for img_idx, img_dict in enumerate(images):
                                     if "target" in img_dict:
                                         wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
-                                    elif "original_prompt" in img_dict:
+                                        continue
+
+                                    # log generated images
+                                    if "original_prompt" in img_dict:
                                         wandb.log({"No attack": wandb.Image(img_dict["generated"], caption=img_dict["original_prompt"])})
                                     else:
-                                        wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"],caption=img_dict["prompt"])})
-                                        if img_dict["nude"]:
-                                            detected.append(img_idx)
+                                        wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"], caption=img_dict.get("prompt", ""))})
 
-                                if len(detected)>0:
-                                    logger.info(f"Nudity detected in generated images at indices: {detected} \n The training will stop and images and prompts will be saved to folder for review.")
-                                    save_path = os.path.join(self.args.output_dir, "nudity_detected")
+                                    # OLD:
+                                    # if img_dict["nude"]:
+                                    # NEW:
+                                    if _concept_triggered(img_dict):
+                                        detected.append(img_idx)
+
+                                if len(detected) > 0:
+                                    concept = _concept_name(images[detected[0]])
+                                    logger.info(
+                                        f"Concept detected in generated images at indices: {detected} (concept={concept}). "
+                                        f"Training will stop and artifacts will be saved for review."
+                                    )
+
+                                    save_path = os.path.join(self.args.output_dir, "concept_detected")
                                     os.makedirs(save_path, exist_ok=True)
+
                                     for idx in detected:
                                         img_dict = images[idx]
-                                        img_dict["generated"].save(os.path.join(save_path, f"generated_image_{idx}_step_{self._step}.png"))
-                                        with open(os.path.join(save_path, f"prompt_{idx}_step_{self._step}.txt"), "w") as f:
-                                            f.write(f'prompt: {img_dict["prompt"]}\n')
-                                            f.write(f'nude: {img_dict["nude"]}\n')
-                                            f.write(f'score: {img_dict["score"]}\n')
+
+                                        # be robust if generation failed
+                                        if img_dict.get("generated") is not None:
+                                            img_dict["generated"].save(
+                                                os.path.join(save_path, f"generated_image_{idx}_step_{self._step}.png")
+                                            )
+
+                                        meta = {
+                                            "step": self._step,
+                                            "idx": idx,
+                                            "prompt": img_dict.get("prompt", None),
+                                            "original_prompt": img_dict.get("original_prompt", None),
+                                            "concept": _concept_name(img_dict),
+                                            "concept_type": img_dict.get("concept_type", None),
+                                            "success": img_dict.get("success", False),
+                                            "score": img_dict.get("score", 0.0),
+                                            "details": _concept_details(img_dict),
+                                        }
+
+                                        with open(os.path.join(save_path, f"meta_{idx}_step_{self._step}.json"), "w") as f:
+                                            json.dump(meta, f, indent=2)
+
                                     self.detected = True
                     else:
                         output_reward_func = reward_func(completions, **reward_kwargs)
