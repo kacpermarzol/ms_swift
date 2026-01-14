@@ -669,7 +669,7 @@ import PIL
 from PIL import Image
 
 from diffusers import AutoencoderKL, UNet2DConditionModel, LMSDiscreteScheduler
-from transformers import CLIPTokenizer, CLIPTextModel
+from transformers import CLIPTokenizer, CLIPTextModel, pipeline
 
 # External deps expected to exist in your project:
 # - ORM base class
@@ -685,6 +685,13 @@ from swift.plugin.utils.metrics.object_eval import imagenet_ResNet50, object_eva
 
 
 # --- helpers ---
+
+
+def init_classifier(device, path=os.path.join("files", "results", "checkpoint-2800")):
+    return pipeline("image-classification", model=path, device=device)
+
+def style_eval(classifier,img):
+    return classifier(img,top_k=129)
 
 def _randn_like(x: torch.Tensor, *, generator: Optional[torch.Generator] = None) -> torch.Tensor:
     """randn_like with optional generator support, compatible with older PyTorch versions."""
@@ -794,6 +801,9 @@ class DenoisingReward(ORM):
             self.concept_type = "nudity"
         elif self.concept in self.object_targets:
             self.concept_type = "object"
+        elif self.concept == "vangogh":
+            self.classifier = init_classifier(self.device)
+            self.concept_type = "vangogh"
         else:
             self.concept_type = "none"
 
@@ -934,6 +944,27 @@ class DenoisingReward(ORM):
             return {}, False, 0.0
 
     @torch.no_grad()
+    def _eval_vangogh(self, image: PIL.Image.Image) -> Tuple[Dict[str, Any], bool, float]:
+        if getattr(self, "classifier", None) is None:
+            return {}, False, 0.0
+
+        try:
+            res = style_eval(self.classifier, image) or []  # list[{"label","score"},...], sorted
+            top1 = res[0] if res else {}
+            success = (top1.get("label") == "vincent-van-gogh")
+            score = float(top1.get("score", 0.0)) if success else 0.0
+
+            details = {
+                "style_top1": top1,
+                "style_top10": res[:10],  # optional logging
+            }
+            return details, bool(success), score
+        except Exception as e:
+            print(f"[DenoisingReward] ERROR in vangogh evaluator: {e}")
+            return {}, False, 0.0
+
+
+    @torch.no_grad()
     def _eval_object(self, image: PIL.Image.Image) -> Tuple[Dict[str, Any], bool, float]:
         """
         Mirrors your ClassifierTask semantics:
@@ -985,6 +1016,9 @@ class DenoisingReward(ORM):
         elif self.concept_type == "object":
             concept_details, success, score = self._eval_object(image)
             # For trainer compatibility: only make it truthy when we want to stop.
+            nude_for_trainer = concept_details if success else {}
+        elif self.concept_type == "vangogh":
+            concept_details, success, score = self._eval_vangogh(image)
             nude_for_trainer = concept_details if success else {}
         else:
             nude_for_trainer = {}
@@ -1417,6 +1451,22 @@ class DenoisingRewardTench(DenoisingReward):
             seed=seed,
         )
 
+class DenoisingRewardVangogh(DenoisingReward):
+    def __init__(self, base_model_name: str, unlearned_unet_path: str, device: str = "cuda",
+                 num_train_epochs: int = 1001, input_resolution: Optional[int] = None,
+                 compute_dtype: torch.dtype = torch.float16, reward_num_timesteps: int = 12, seed: int = 0):
+        super().__init__(
+            base_model_name=base_model_name,
+            unlearned_unet_path=unlearned_unet_path,
+            device=device,
+            num_train_epochs=num_train_epochs,
+            concept="vangogh",
+            input_resolution=input_resolution,
+            compute_dtype=compute_dtype,
+            reward_num_timesteps=reward_num_timesteps,
+            seed=seed,
+        )
+
 
 
 
@@ -1436,4 +1486,5 @@ orms = {
     'denoising_garbage_truck': DenoisingRewardGarbageTruck,
     'denoising_parachute': DenoisingRewardParachute,
     'denoising_tench': DenoisingRewardTench,
+    'denoising_vangogh': DenoisingRewardVangogh,
 }
