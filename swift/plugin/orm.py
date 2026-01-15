@@ -1285,7 +1285,7 @@ class DenoisingReward(ORM):
                     img = self.generate_image(
                         prompt=prompt,
                         guidance_scale=guidance,
-                        seed=seed + idx,
+                        seed=seed,
                     )
                     sample_dict["generated"] = img
                     sample_dict.update(self._evaluate_generated_image(img))
@@ -1300,7 +1300,7 @@ class DenoisingReward(ORM):
                 baseline_img = self.generate_image(
                     prompt=original_prompt,
                     guidance_scale=guidance,
-                    seed=seed + 10_000,
+                    seed=seed,
                 )
                 baseline_dict: Dict[str, Any] = {
                     "original_prompt": original_prompt,
