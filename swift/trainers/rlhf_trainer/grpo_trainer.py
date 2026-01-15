@@ -337,6 +337,61 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                 total_rewards_per_func, dtype=torch.float32, device=self.accelerator.device)
 
         return total_rewards_per_func
+    
+    def _build_prompt_only_rows_for_viz(self, inputs: DataType, repeats_per_prompt: int) -> DataType:
+        # assumes standard GRPO layout: each prompt has self.num_generations rows
+        prompt_only_rows: List[Dict[str, Any]] = []
+        ng = int(self.num_generations)
+        if repeats_per_prompt <= 0:
+            return prompt_only_rows
+
+        for i in range(0, len(inputs), ng):
+            row = deepcopy(inputs[i])
+            # strip the assistant completion from messages
+            if "messages" in row and isinstance(row["messages"], list) and len(row["messages"]) > 0:
+                row["messages"] = deepcopy(row["messages"][:-1])
+
+            # drop fields that shouldn't matter for generation (safe no-ops if missing)
+            for k in ["advantages", "response_token_ids", "response_loss_mask"]:
+                row.pop(k, None)
+
+            for _ in range(repeats_per_prompt):
+                prompt_only_rows.append(deepcopy(row))
+
+        return prompt_only_rows
+
+
+    def _generate_extra_completions_for_viz(self, inputs: DataType, multiplier: int) -> List[str]:
+        """
+        multiplier=3 with base num_generations=8 -> generate 16 extra completions per prompt (2x extra).
+        Returns completion texts only; does not affect training batch.
+        """
+        mult = int(multiplier)
+        if mult <= 1:
+            return []
+
+        extra_per_prompt = int(self.num_generations) * (mult - 1)
+        prompt_rows = self._build_prompt_only_rows_for_viz(inputs, repeats_per_prompt=extra_per_prompt)
+        if not prompt_rows:
+            return []
+
+        # keep RNG changes local to this call (does NOT touch diffusion seed)
+        devices = []
+        if self.accelerator.device.type == "cuda":
+            devices = [torch.cuda.current_device()]
+
+        seed = int(self.args.seed) + 1_000_000 + int(self._step)
+        with torch.random.fork_rng(devices=devices, enabled=True):
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed)
+            extra_outputs = self._generate_completions(prompt_rows)
+
+        extra_completions: List[str] = []
+        for out in extra_outputs:
+            extra_completions.append(out["messages"][-1]["content"])
+        return extra_completions
+
 
     def _compute_rewards_per_func(self, inputs: DataType) -> torch.Tensor:
         """Compute rewards using all reward functions"""
@@ -368,7 +423,14 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                         reward_kwargs.update({'seed': inputs[0]['seed']})
                         reward_kwargs.update({'guidance': inputs[0]['guidance']})
 
+                        # add extra completions only on visualization steps
+                        viz_mult = int(getattr(self.args, "viz_num_generations_multiplier", 3))
+                        should_viz = (self._step != 0) and ((self._step % 25) == 0 or mode == "eval")
+                        if should_viz and viz_mult > 1:
+                            reward_kwargs["viz_extra_completions"] = self._generate_extra_completions_for_viz(inputs, viz_mult)
+
                         output_reward_func, images = reward_func(completions, **reward_kwargs)
+
 
                         if images:
                             if self._step == 0:

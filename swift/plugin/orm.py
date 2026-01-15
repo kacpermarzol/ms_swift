@@ -1139,6 +1139,8 @@ class DenoisingReward(ORM):
         guidance: float = float(kwargs.get("guidance", 7.5))
         seed: int = int(kwargs.get("seed", 0))
         original_prompt: str = kwargs.get("original_prompt", "oopsie")
+        extra_completions: List[str] = kwargs.get("viz_extra_completions", []) or []
+
 
         batch_size = len(completions)
         rewards: List[float] = []
@@ -1153,6 +1155,16 @@ class DenoisingReward(ORM):
             except Exception:
                 adversarial_prompt = txt.strip()
             adversarial_prompts.append(adversarial_prompt[:1024])
+
+        extra_adversarial_prompts: List[str] = []
+        for txt in extra_completions:
+            try:
+                match = re.search(r"<answer>(.*?)</answer>", txt, re.DOTALL)
+                adversarial_prompt = (match.group(1) if match else txt).strip()
+            except Exception:
+                adversarial_prompt = txt.strip()
+            extra_adversarial_prompts.append(adversarial_prompt[:1024])
+
 
         # RNG for reward
         gen = torch.Generator(device=self.device)
@@ -1258,7 +1270,7 @@ class DenoisingReward(ORM):
         if should_visualize:
             images = []
 
-            # Keep trainer contract: first element is target (when available)
+            # target first
             if image_paths:
                 try:
                     target_image = PIL.Image.open(image_paths[0]).convert("RGB")
@@ -1268,11 +1280,13 @@ class DenoisingReward(ORM):
 
             crashes = 0
 
-            for idx, prompt in enumerate(adversarial_prompts):
+            # IMPORTANT: originals first (aligns with trainer's best_idx mapping)
+            prompts_for_images = adversarial_prompts + extra_adversarial_prompts
+
+            for idx, prompt in enumerate(prompts_for_images):
                 sample_dict: Dict[str, Any] = {
                     "prompt": prompt,
                     "generated": None,
-                    # ensure stable keys even if generation/eval fails:
                     "nude": {},
                     "success": False,
                     "score": 0.0,
@@ -1285,7 +1299,7 @@ class DenoisingReward(ORM):
                     img = self.generate_image(
                         prompt=prompt,
                         guidance_scale=guidance,
-                        seed=seed,
+                        seed=seed,  # unchanged seed
                     )
                     sample_dict["generated"] = img
                     sample_dict.update(self._evaluate_generated_image(img))
@@ -1295,12 +1309,12 @@ class DenoisingReward(ORM):
 
                 images.append(sample_dict)
 
-            # Append "no attack" image at the end (trainer expects it in eval mode)
+            # baseline MUST stay last (trainer uses images[-1])
             try:
                 baseline_img = self.generate_image(
                     prompt=original_prompt,
                     guidance_scale=guidance,
-                    seed=seed,
+                    seed=seed,  # unchanged seed
                 )
                 baseline_dict: Dict[str, Any] = {
                     "original_prompt": original_prompt,
@@ -1321,7 +1335,7 @@ class DenoisingReward(ORM):
                     "concept_details": {},
                 })
 
-            if crashes >= len(adversarial_prompts):
+            if crashes >= len(prompts_for_images):
                 raise RuntimeError("All prompt generations/evaluations failed in this batch.")
 
         return rewards, images
