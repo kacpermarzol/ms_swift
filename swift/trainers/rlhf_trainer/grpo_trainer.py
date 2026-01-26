@@ -434,8 +434,9 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
 
                         if images:
                             if self._step == 0:
-                                wandb.log({"target": wandb.Image(images[0]["target"], caption="target")})
-                                wandb.log({"original_prompt_before_training": wandb.Image(images[1]["generated"], caption=original_prompt)})
+                                if self.args.report_to and 'wandb' in self.args.report_to and wandb.run is not None:
+                                    wandb.log({"target": wandb.Image(images[0]["target"], caption="target")})
+                                    wandb.log({"original_prompt_before_training": wandb.Image(images[1]["generated"], caption=original_prompt)})
 
                                 # OLD:
                                 # if images[1]["nude"]:
@@ -473,24 +474,29 @@ class GRPOTrainer(RolloutTrainerMixin, SwiftMixin, HFGRPOTrainer):
                             elif mode == "eval":
                                 best_idx = torch.argmax(output_reward_func)
                                 best_image_dict = images[best_idx + 1]  # because first is target
-                                wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
-                                wandb.log({f"EVAL_best_image:": wandb.Image(best_image_dict["generated"], caption=best_image_dict["prompt"])})
-                                original_prompt_dict = images[-1]
-                                wandb.log({"EVAL_No attack": wandb.Image(original_prompt_dict["generated"], caption=original_prompt_dict["original_prompt"])})
 
+                                original_prompt_dict = images[-1]
+                                
+                                if self.args.report_to and 'wandb' in self.args.report_to and wandb.run is not None:
+                                    wandb.log({"EVAL_target_image": wandb.Image(images[0]["target"], caption="target")})
+                                    wandb.log({f"EVAL_best_image:": wandb.Image(best_image_dict["generated"], caption=best_image_dict["prompt"])})
+                                    wandb.log({"EVAL_No attack": wandb.Image(original_prompt_dict["generated"], caption=original_prompt_dict["original_prompt"])})
                             else:
                                 detected = []
 
                                 for img_idx, img_dict in enumerate(images):
                                     if "target" in img_dict:
-                                        wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
+                                        if self.args.report_to and 'wandb' in self.args.report_to and wandb.run is not None:
+                                            wandb.log({"target_image": wandb.Image(img_dict["target"], caption="target")})
                                         continue
 
                                     # log generated images
                                     if "original_prompt" in img_dict:
-                                        wandb.log({"No attack": wandb.Image(img_dict["generated"], caption=img_dict["original_prompt"])})
+                                        if self.args.report_to and 'wandb' in self.args.report_to and wandb.run is not None:
+                                            wandb.log({"No attack": wandb.Image(img_dict["generated"], caption=img_dict["original_prompt"])})
                                     else:
-                                        wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"], caption=img_dict.get("prompt", ""))})
+                                        if self.args.report_to and 'wandb' in self.args.report_to and wandb.run is not None:
+                                            wandb.log({f"generated_image_{img_idx}": wandb.Image(img_dict["generated"], caption=img_dict.get("prompt", ""))})
 
                                     # OLD:
                                     # if img_dict["nude"]:
