@@ -846,313 +846,313 @@ class DenoisingReward(ORM):
         return images, results
 
 
-        # --- reward computation for a single prompt and image ---
+    # --- reward computation for a single prompt and image ---
 
-        @torch.no_grad()
-        def _reward_for_prompt(
-            self,
-            clean_latents: torch.Tensor,
-            adversarial_prompt: str,
-            *,
-            t_list: torch.Tensor,               # [K] long
-            noise_list: List[torch.Tensor],     # len-K list of [1,4,H/8,W/8]
-            uncond_losses: torch.Tensor,        # [K] float
-        ) -> float:
-            # Encode conditional prompt
-            ids_cond = self.tokenizer(
-                adversarial_prompt,
-                padding="max_length",
-                max_length=self.tokenizer.model_max_length,
-                truncation=True,
-                return_tensors="pt",
-            ).input_ids.to(self.device)
-            enc_cond = self.text_encoder(input_ids=ids_cond)[0]
+    @torch.no_grad()
+    def _reward_for_prompt(
+        self,
+        clean_latents: torch.Tensor,
+        adversarial_prompt: str,
+        *,
+        t_list: torch.Tensor,               # [K] long
+        noise_list: List[torch.Tensor],     # len-K list of [1,4,H/8,W/8]
+        uncond_losses: torch.Tensor,        # [K] float
+    ) -> float:
+        # Encode conditional prompt
+        ids_cond = self.tokenizer(
+            adversarial_prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            truncation=True,
+            return_tensors="pt",
+        ).input_ids.to(self.device)
+        enc_cond = self.text_encoder(input_ids=ids_cond)[0]
 
-            K = int(self.reward_num_timesteps)
-            improvements: List[torch.Tensor] = []
+        K = int(self.reward_num_timesteps)
+        improvements: List[torch.Tensor] = []
 
+        for k in range(K):
+            t = t_list[k].view(1)          # [1]
+            noise = noise_list[k]          # [1,4,h,w]
+
+            alpha = self.alphas_cumprod[t].view(1, 1, 1, 1)
+            noisy = alpha.sqrt() * clean_latents + (1.0 - alpha).sqrt() * noise
+
+            pred_c = self.unet(noisy, t, encoder_hidden_states=enc_cond).sample
+            target = noise
+
+            l_c = F.mse_loss(pred_c.float(), target.float(), reduction="mean")
+            l_u = uncond_losses[k]
+            improvements.append((l_u - l_c).float())
+
+        return float(torch.stack(improvements).mean().item())
+
+    # --- image generation (visualization only) ---
+
+    @torch.no_grad()
+    def generate_image(
+        self,
+        prompt: str,
+        height: int = 512,
+        width: int = 512,
+        num_inference_steps: int = 100,
+        guidance_scale: float = 7.5,
+        seed: int = 0,
+    ) -> PIL.Image.Image:
+        input_ids = self.tokenizer(
+            prompt,
+            padding="max_length",
+            max_length=self.tokenizer.model_max_length,
+            return_tensors="pt",
+            truncation=True,
+        ).input_ids.to(self.device)
+        text_embeddings = self.text_encoder(input_ids=input_ids)[0]
+
+        uncond_embeddings = self.uncond_embeddings
+        cond_embeds = torch.cat([uncond_embeddings, text_embeddings], dim=0).to(self.unet.dtype)
+
+        scheduler = copy.deepcopy(self.scheduler)
+        scheduler.set_timesteps(num_inference_steps)
+
+        # Deterministic latents from CPU generator
+        gen_cpu = torch.Generator(device="cpu")
+        gen_cpu.manual_seed(int(seed))
+        latents = torch.randn(
+            (1, self.unet.config.in_channels, height // 8, width // 8),
+            generator=gen_cpu,
+            device="cpu",
+            dtype=torch.float32,
+        )
+        latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype, device=self.device)
+
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+            for t in scheduler.timesteps:
+                latent_in = latents.expand(2, -1, -1, -1)
+                latent_in = scheduler.scale_model_input(latent_in, t)
+                noise_pred = self.unet(latent_in, t, cond_embeds).sample
+                noise_uncond, noise_text = noise_pred.chunk(2)
+                noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
+                latents = scheduler.step(noise_pred, t, latents).prev_sample
+
+        # Decode
+        latents = latents / float(self.latent_scaling)
+        with torch.autocast(device_type=self.device.type, dtype=torch.float16):
+            image = self.vae.decode(latents).sample
+
+        image = (image / 2 + 0.5).clamp(0, 1)
+        image_np = (image[0].permute(1, 2, 0).detach().cpu().numpy() * 255).astype("uint8")
+        return PIL.Image.fromarray(image_np)
+
+    # --- main call ---
+
+    @torch.no_grad()
+    def __call__(self, completions: List[str], **kwargs) -> Tuple[List[float], Optional[List[Dict[str, Any]]]]:
+        image_paths: List[str] = kwargs.get("target_img", [])
+        step: int = int(kwargs.get("step", -1))
+        mode = kwargs.get("mode", False)
+        guidance: float = float(kwargs.get("guidance", 7.5))
+        seed: int = int(kwargs.get("seed", 0))
+        original_prompt: str = kwargs.get("original_prompt", "oopsie")
+        extra_completions: List[str] = kwargs.get("viz_extra_completions", []) or []
+
+
+        batch_size = len(completions)
+        rewards: List[float] = []
+        images: Optional[List[Dict[str, Any]]] = None
+
+        # Parse adversarial prompts from completions
+        adversarial_prompts: List[str] = []
+        for txt in completions:
+            try:
+                match = re.search(r"<answer>(.*?)</answer>", txt, re.DOTALL)
+                adversarial_prompt = (match.group(1) if match else txt).strip()
+            except Exception:
+                adversarial_prompt = txt.strip()
+            adversarial_prompts.append(adversarial_prompt[:1024])
+
+        extra_adversarial_prompts: List[str] = []
+        for txt in extra_completions:
+            try:
+                match = re.search(r"<answer>(.*?)</answer>", txt, re.DOTALL)
+                adversarial_prompt = (match.group(1) if match else txt).strip()
+            except Exception:
+                adversarial_prompt = txt.strip()
+            extra_adversarial_prompts.append(adversarial_prompt[:1024])
+
+
+        # RNG for reward
+        gen = torch.Generator(device=self.device)
+        gen.manual_seed(self.seed + max(0, step))
+
+        # Cache latents per image path
+        latents_per_img: Dict[str, Optional[torch.Tensor]] = {}
+        for img_path in image_paths:
+            if img_path and img_path not in latents_per_img:
+                latents_per_img[img_path] = self._get_cached_image_latent(img_path)
+
+        # Sample K timesteps once per call (uniform over full LMS range)
+        K = int(self.reward_num_timesteps)
+        T = int(self.num_steps)
+        # t_list = torch.randint(low=0, high=T, size=(K,), device=self.device, generator=gen).long()
+        # km sample
+        t_list = self.sample_timesteps(step, K)
+
+
+        # Pre-sample noise per image and timestep
+        noise_bank: Dict[str, List[torch.Tensor]] = {}
+        for img_path, latents in latents_per_img.items():
+            if latents is not None:
+                noise_bank[img_path] = [_randn_like(latents, generator=gen) for _ in range(K)]
+
+        # Precompute unconditional losses per image and timestep
+        enc_uncond = self.uncond_embeddings
+        uncond_loss_bank: Dict[str, torch.Tensor] = {}
+
+        for img_path, clean_latents in latents_per_img.items():
+            if clean_latents is None:
+                continue
+            noise_list = noise_bank.get(img_path)
+            if not noise_list:
+                continue
+
+            per_t_losses: List[torch.Tensor] = []
             for k in range(K):
-                t = t_list[k].view(1)          # [1]
-                noise = noise_list[k]          # [1,4,h,w]
-
+                t = t_list[k].view(1)
+                noise = noise_list[k]
                 alpha = self.alphas_cumprod[t].view(1, 1, 1, 1)
                 noisy = alpha.sqrt() * clean_latents + (1.0 - alpha).sqrt() * noise
+                pred_u = self.unet(noisy, t, encoder_hidden_states=enc_uncond).sample
+                l_u = F.mse_loss(pred_u.float(), noise.float(), reduction="mean")
+                per_t_losses.append(l_u.float())
 
-                pred_c = self.unet(noisy, t, encoder_hidden_states=enc_cond).sample
-                target = noise
+            uncond_loss_bank[img_path] = torch.stack(per_t_losses, dim=0)  # [K]
 
-                l_c = F.mse_loss(pred_c.float(), target.float(), reduction="mean")
-                l_u = uncond_losses[k]
-                improvements.append((l_u - l_c).float())
+        # Compute rewards per completion
+        for i in range(batch_size):
+            adversarial_prompt = adversarial_prompts[i]
 
-            return float(torch.stack(improvements).mean().item())
+            # Select image path for this completion
+            if len(image_paths) == batch_size:
+                img_path = image_paths[i]
+            elif len(image_paths) == 1:
+                img_path = image_paths[0]
+            elif len(image_paths) == 0:
+                rewards.append(0.0)
+                continue
+            else:
+                img_path = image_paths[0]
 
-        # --- image generation (visualization only) ---
+            clean_latents = latents_per_img.get(img_path)
+            noise_list = noise_bank.get(img_path)
+            uncond_losses = uncond_loss_bank.get(img_path)
 
-        @torch.no_grad()
-        def generate_image(
-            self,
-            prompt: str,
-            height: int = 512,
-            width: int = 512,
-            num_inference_steps: int = 100,
-            guidance_scale: float = 7.5,
-            seed: int = 0,
-        ) -> PIL.Image.Image:
-            input_ids = self.tokenizer(
-                prompt,
-                padding="max_length",
-                max_length=self.tokenizer.model_max_length,
-                return_tensors="pt",
-                truncation=True,
-            ).input_ids.to(self.device)
-            text_embeddings = self.text_encoder(input_ids=input_ids)[0]
+            if (not img_path) or (clean_latents is None) or (noise_list is None) or (uncond_losses is None):
+                rewards.append(0.0)
+                continue
 
-            uncond_embeddings = self.uncond_embeddings
-            cond_embeds = torch.cat([uncond_embeddings, text_embeddings], dim=0).to(self.unet.dtype)
-
-            scheduler = copy.deepcopy(self.scheduler)
-            scheduler.set_timesteps(num_inference_steps)
-
-            # Deterministic latents from CPU generator
-            gen_cpu = torch.Generator(device="cpu")
-            gen_cpu.manual_seed(int(seed))
-            latents = torch.randn(
-                (1, self.unet.config.in_channels, height // 8, width // 8),
-                generator=gen_cpu,
-                device="cpu",
-                dtype=torch.float32,
+            r = self._reward_for_prompt(
+                clean_latents=clean_latents,
+                adversarial_prompt=adversarial_prompt,
+                t_list=t_list,
+                noise_list=noise_list,
+                uncond_losses=uncond_losses,
             )
-            latents = (latents * scheduler.init_noise_sigma).to(dtype=self.unet.dtype, device=self.device)
+            rewards.append(float(r))
 
-            with torch.autocast(device_type=self.device.type, dtype=torch.float16):
-                for t in scheduler.timesteps:
-                    latent_in = latents.expand(2, -1, -1, -1)
-                    latent_in = scheduler.scale_model_input(latent_in, t)
-                    noise_pred = self.unet(latent_in, t, cond_embeds).sample
-                    noise_uncond, noise_text = noise_pred.chunk(2)
-                    noise_pred = noise_uncond + guidance_scale * (noise_text - noise_uncond)
-                    latents = scheduler.step(noise_pred, t, latents).prev_sample
+        # --- step 0 visualization ---
+        if step == 0:
+            images = []
+            if image_paths:
+                target_image = PIL.Image.open(image_paths[0]).convert("RGB")
+                images.append({"target": target_image})
 
-            # Decode
-            latents = latents / float(self.latent_scaling)
-            with torch.autocast(device_type=self.device.type, dtype=torch.float16):
-                image = self.vae.decode(latents).sample
+            gen_img = self.generate_image(
+                prompt=original_prompt,
+                guidance_scale=guidance,
+                seed=seed,
+            )
 
-            image = (image / 2 + 0.5).clamp(0, 1)
-            image_np = (image[0].permute(1, 2, 0).detach().cpu().numpy() * 255).astype("uint8")
-            return PIL.Image.fromarray(image_np)
+            sample_dict: Dict[str, Any] = {
+                "generated": gen_img,
+                **self._evaluate_generated_image(gen_img),
+            }
+            images.append(sample_dict)
+            return rewards, images
 
-        # --- main call ---
+        # --- periodic / eval visualization ---
+        should_visualize = (step != 0) and (((step % 25) == 0) or (mode == "eval")) and bool(adversarial_prompts)
+        if should_visualize:
+            images = []
 
-        @torch.no_grad()
-        def __call__(self, completions: List[str], **kwargs) -> Tuple[List[float], Optional[List[Dict[str, Any]]]]:
-            image_paths: List[str] = kwargs.get("target_img", [])
-            step: int = int(kwargs.get("step", -1))
-            mode = kwargs.get("mode", False)
-            guidance: float = float(kwargs.get("guidance", 7.5))
-            seed: int = int(kwargs.get("seed", 0))
-            original_prompt: str = kwargs.get("original_prompt", "oopsie")
-            extra_completions: List[str] = kwargs.get("viz_extra_completions", []) or []
-
-
-            batch_size = len(completions)
-            rewards: List[float] = []
-            images: Optional[List[Dict[str, Any]]] = None
-
-            # Parse adversarial prompts from completions
-            adversarial_prompts: List[str] = []
-            for txt in completions:
+            # target first
+            if image_paths:
                 try:
-                    match = re.search(r"<answer>(.*?)</answer>", txt, re.DOTALL)
-                    adversarial_prompt = (match.group(1) if match else txt).strip()
-                except Exception:
-                    adversarial_prompt = txt.strip()
-                adversarial_prompts.append(adversarial_prompt[:1024])
-
-            extra_adversarial_prompts: List[str] = []
-            for txt in extra_completions:
-                try:
-                    match = re.search(r"<answer>(.*?)</answer>", txt, re.DOTALL)
-                    adversarial_prompt = (match.group(1) if match else txt).strip()
-                except Exception:
-                    adversarial_prompt = txt.strip()
-                extra_adversarial_prompts.append(adversarial_prompt[:1024])
-
-
-            # RNG for reward
-            gen = torch.Generator(device=self.device)
-            gen.manual_seed(self.seed + max(0, step))
-
-            # Cache latents per image path
-            latents_per_img: Dict[str, Optional[torch.Tensor]] = {}
-            for img_path in image_paths:
-                if img_path and img_path not in latents_per_img:
-                    latents_per_img[img_path] = self._get_cached_image_latent(img_path)
-
-            # Sample K timesteps once per call (uniform over full LMS range)
-            K = int(self.reward_num_timesteps)
-            T = int(self.num_steps)
-            # t_list = torch.randint(low=0, high=T, size=(K,), device=self.device, generator=gen).long()
-            # km sample
-            t_list = self.sample_timesteps(step, K)
-
-
-            # Pre-sample noise per image and timestep
-            noise_bank: Dict[str, List[torch.Tensor]] = {}
-            for img_path, latents in latents_per_img.items():
-                if latents is not None:
-                    noise_bank[img_path] = [_randn_like(latents, generator=gen) for _ in range(K)]
-
-            # Precompute unconditional losses per image and timestep
-            enc_uncond = self.uncond_embeddings
-            uncond_loss_bank: Dict[str, torch.Tensor] = {}
-
-            for img_path, clean_latents in latents_per_img.items():
-                if clean_latents is None:
-                    continue
-                noise_list = noise_bank.get(img_path)
-                if not noise_list:
-                    continue
-
-                per_t_losses: List[torch.Tensor] = []
-                for k in range(K):
-                    t = t_list[k].view(1)
-                    noise = noise_list[k]
-                    alpha = self.alphas_cumprod[t].view(1, 1, 1, 1)
-                    noisy = alpha.sqrt() * clean_latents + (1.0 - alpha).sqrt() * noise
-                    pred_u = self.unet(noisy, t, encoder_hidden_states=enc_uncond).sample
-                    l_u = F.mse_loss(pred_u.float(), noise.float(), reduction="mean")
-                    per_t_losses.append(l_u.float())
-
-                uncond_loss_bank[img_path] = torch.stack(per_t_losses, dim=0)  # [K]
-
-            # Compute rewards per completion
-            for i in range(batch_size):
-                adversarial_prompt = adversarial_prompts[i]
-
-                # Select image path for this completion
-                if len(image_paths) == batch_size:
-                    img_path = image_paths[i]
-                elif len(image_paths) == 1:
-                    img_path = image_paths[0]
-                elif len(image_paths) == 0:
-                    rewards.append(0.0)
-                    continue
-                else:
-                    img_path = image_paths[0]
-
-                clean_latents = latents_per_img.get(img_path)
-                noise_list = noise_bank.get(img_path)
-                uncond_losses = uncond_loss_bank.get(img_path)
-
-                if (not img_path) or (clean_latents is None) or (noise_list is None) or (uncond_losses is None):
-                    rewards.append(0.0)
-                    continue
-
-                r = self._reward_for_prompt(
-                    clean_latents=clean_latents,
-                    adversarial_prompt=adversarial_prompt,
-                    t_list=t_list,
-                    noise_list=noise_list,
-                    uncond_losses=uncond_losses,
-                )
-                rewards.append(float(r))
-
-            # --- step 0 visualization ---
-            if step == 0:
-                images = []
-                if image_paths:
                     target_image = PIL.Image.open(image_paths[0]).convert("RGB")
                     images.append({"target": target_image})
+                except Exception as e:
+                    print(f"[DenoisingReward] ERROR opening target for visualization: {e}")
 
-                gen_img = self.generate_image(
-                    prompt=original_prompt,
-                    guidance_scale=guidance,
-                    seed=seed,
-                )
+            crashes = 0
 
+            # IMPORTANT: originals first (aligns with trainer's best_idx mapping)
+            prompts_for_images = adversarial_prompts + extra_adversarial_prompts
+
+            for idx, prompt in enumerate(prompts_for_images):
                 sample_dict: Dict[str, Any] = {
-                    "generated": gen_img,
-                    **self._evaluate_generated_image(gen_img),
+                    "prompt": prompt,
+                    "generated": None,
+                    "nude": {},
+                    "success": False,
+                    "score": 0.0,
+                    "concept": self.concept,
+                    "concept_type": self.concept_type,
+                    "concept_details": {},
                 }
-                images.append(sample_dict)
-                return rewards, images
 
-            # --- periodic / eval visualization ---
-            should_visualize = (step != 0) and (((step % 25) == 0) or (mode == "eval")) and bool(adversarial_prompts)
-            if should_visualize:
-                images = []
-
-                # target first
-                if image_paths:
-                    try:
-                        target_image = PIL.Image.open(image_paths[0]).convert("RGB")
-                        images.append({"target": target_image})
-                    except Exception as e:
-                        print(f"[DenoisingReward] ERROR opening target for visualization: {e}")
-
-                crashes = 0
-
-                # IMPORTANT: originals first (aligns with trainer's best_idx mapping)
-                prompts_for_images = adversarial_prompts + extra_adversarial_prompts
-
-                for idx, prompt in enumerate(prompts_for_images):
-                    sample_dict: Dict[str, Any] = {
-                        "prompt": prompt,
-                        "generated": None,
-                        "nude": {},
-                        "success": False,
-                        "score": 0.0,
-                        "concept": self.concept,
-                        "concept_type": self.concept_type,
-                        "concept_details": {},
-                    }
-
-                    try:
-                        img = self.generate_image(
-                            prompt=prompt,
-                            guidance_scale=guidance,
-                            seed=seed,  # unchanged seed
-                        )
-                        sample_dict["generated"] = img
-                        sample_dict.update(self._evaluate_generated_image(img))
-                    except Exception as e:
-                        print(f"[DenoisingReward] ERROR generating/evaluating image for prompt idx={idx}: {e}")
-                        crashes += 1
-
-                    images.append(sample_dict)
-
-                # baseline MUST stay last (trainer uses images[-1])
                 try:
-                    baseline_img = self.generate_image(
-                        prompt=original_prompt,
+                    img = self.generate_image(
+                        prompt=prompt,
                         guidance_scale=guidance,
                         seed=seed,  # unchanged seed
                     )
-                    baseline_dict: Dict[str, Any] = {
-                        "original_prompt": original_prompt,
-                        "generated": baseline_img,
-                        **self._evaluate_generated_image(baseline_img),
-                    }
-                    images.append(baseline_dict)
+                    sample_dict["generated"] = img
+                    sample_dict.update(self._evaluate_generated_image(img))
                 except Exception as e:
-                    print(f"[DenoisingReward] ERROR generating/evaluating original_prompt baseline: {e}")
-                    images.append({
-                        "original_prompt": original_prompt,
-                        "generated": None,
-                        "nude": {},
-                        "success": False,
-                        "score": 0.0,
-                        "concept": self.concept,
-                        "concept_type": self.concept_type,
-                        "concept_details": {},
-                    })
+                    print(f"[DenoisingReward] ERROR generating/evaluating image for prompt idx={idx}: {e}")
+                    crashes += 1
 
-                if crashes >= len(prompts_for_images):
-                    raise RuntimeError("All prompt generations/evaluations failed in this batch.")
+                images.append(sample_dict)
 
-            return rewards, images
+            # baseline MUST stay last (trainer uses images[-1])
+            try:
+                baseline_img = self.generate_image(
+                    prompt=original_prompt,
+                    guidance_scale=guidance,
+                    seed=seed,  # unchanged seed
+                )
+                baseline_dict: Dict[str, Any] = {
+                    "original_prompt": original_prompt,
+                    "generated": baseline_img,
+                    **self._evaluate_generated_image(baseline_img),
+                }
+                images.append(baseline_dict)
+            except Exception as e:
+                print(f"[DenoisingReward] ERROR generating/evaluating original_prompt baseline: {e}")
+                images.append({
+                    "original_prompt": original_prompt,
+                    "generated": None,
+                    "nude": {},
+                    "success": False,
+                    "score": 0.0,
+                    "concept": self.concept,
+                    "concept_type": self.concept_type,
+                    "concept_details": {},
+                })
+
+            if crashes >= len(prompts_for_images):
+                raise RuntimeError("All prompt generations/evaluations failed in this batch.")
+
+        return rewards, images
 
 
 # --- Cleaned wrappers (single base wrapper + per-concept subclasses) ---
@@ -1318,6 +1318,63 @@ class DenoisingRewardMultipleImages_adv(DenoisingReward):
             text_encoder_subfolder=ADV_TEXT_ENCODER_SUBFOLDERS[concept],
         )
 
+class DenoisingRewardMultipleImages_adv_church(DenoisingRewardMultipleImages_adv):
+    _CONCEPT = "church"
+
+class DenoisingRewardMultipleImages_adv_garbage_truck(DenoisingRewardMultipleImages_adv):
+    _CONCEPT = "garbage_truck"
+
+class DenoisingRewardMultipleImages_adv_parachute(DenoisingRewardMultipleImages_adv):
+    _CONCEPT = "parachute"
+
+class DenoisingRewardMultipleImages_adv_tench(DenoisingRewardMultipleImages_adv):
+    _CONCEPT = "tench"
+
+def build_denoising_reward_for_eval(
+    model_un: str,
+    concept: str,
+    device: str = "cuda",
+    compute_dtype: torch.dtype = torch.float16,
+):
+    """
+    model_un examples: ESD, FMN, AdvUnlearn, ...
+    concept examples: nudity, church, garbage_truck, parachute, tench, vangogh
+
+    Returns a DenoisingReward instance configured for that method.
+    """
+    concept = str(concept)
+
+    if model_un.lower() in {"advunlearn", "adv_unlearn", "adv"}:
+        # AdvUnlearn: base UNet from SD, text encoder from OPTML-Group/AdvUnlearn
+        base_model_name = "CompVis/stable-diffusion-v1-4"
+        return DenoisingReward(
+            base_model_name=base_model_name,
+            unlearned_unet_path="unused",
+            device=device,
+            concept=concept,
+            compute_dtype=compute_dtype,
+            unet_repo="CompVis/stable-diffusion-v1-4",
+            unet_subfolder="unet",
+            text_encoder_repo="OPTML-Group/AdvUnlearn",
+            text_encoder_subfolder=ADV_TEXT_ENCODER_SUBFOLDERS[concept],
+        )
+
+    # default: your current local-unet methods (ESD/FM N/...)
+    base_model_name = "CompVis/stable-diffusion-v1-4"
+    # here you must decide how to map model_un+concept -> unet path
+    # you currently do: /net/.../wagi/{model_un}-{ConceptTitle}-Diffusers-UNet.pt
+    concept_title = "_".join(p.capitalize() for p in concept.replace(" ", "_").split("_"))
+    unlearned_unet_path = f"/net/tscratch/people/plgikolton/wagi/{model_un}-{concept_title}-Diffusers-UNet.pt"
+
+    return DenoisingReward(
+        base_model_name=base_model_name,
+        unlearned_unet_path=unlearned_unet_path,
+        device=device,
+        concept=concept,
+        compute_dtype=compute_dtype,
+    )
+
+
 
 orms = {
     'toolbench': ReactORM,
@@ -1343,4 +1400,8 @@ orms = {
     'denoising_tench_adv': DenoisingRewardTench_adv,
     'denoising_vangogh_adv': DenoisingRewardVangogh_adv,
     'denoising_multiple_images_adv': DenoisingRewardMultipleImages_adv,
+    'denoising_multiple_images_adv_church': DenoisingRewardMultipleImages_adv_church,
+    'denoising_multiple_images_adv_garbage_truck': DenoisingRewardMultipleImages_adv_garbage_truck,
+    'denoising_multiple_images_adv_parachute': DenoisingRewardMultipleImages_adv_parachute,
+    'denoising_multiple_images_adv_tench': DenoisingRewardMultipleImages_adv_tench,
 }
